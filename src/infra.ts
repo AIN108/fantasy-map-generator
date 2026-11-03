@@ -37,7 +37,21 @@ export interface Infra {
   seaRoutes: number[][];
   ports: PointFeature[];
   facilities: Facility[];
+  /** 직접 놓은 다리·터널: 두 육지 셀 사이의 곧은 구간 */
+  bridges: Span[];
+  tunnels: Span[];
+  /** 지우기로 숨긴 자동 다리·터널 표기 (그 셀이 포함된 자동 표기를 그리지 않는다) */
+  hiddenMarks: number[];
 }
+
+/** 두 셀(a, b) 사이의 곧은 구간 */
+export interface Span {
+  a: number;
+  b: number;
+}
+
+/** 직접 놓는 다리·터널의 최대 길이 (지도 좌표) */
+export const MAX_SPAN_LENGTH = 250;
 
 /** 철도 터널로 표기할 고도 (상대값). 이보다 높은 셀이 2칸 이상 이어지면 터널로 본다. */
 export const TUNNEL_ELEVATION = 0.55;
@@ -48,7 +62,9 @@ export const MAX_PATHS = 400;
 export const MAX_POINTS = 400;
 export const MAX_FEATURE_NAME = 20;
 
-export const emptyInfra = (): Infra => ({ rails: [], seaRoutes: [], ports: [], facilities: [] });
+export const emptyInfra = (): Infra => ({
+  rails: [], seaRoutes: [], ports: [], facilities: [], bridges: [], tunnels: [], hiddenMarks: [],
+});
 
 export function cloneInfra(infra: Infra): Infra {
   return {
@@ -57,12 +73,16 @@ export function cloneInfra(infra: Infra): Infra {
     seaRoutes: infra.seaRoutes.map((p) => [...p]),
     ports: infra.ports.map((p) => ({ ...p })),
     facilities: infra.facilities.map((f) => ({ ...f })),
+    bridges: infra.bridges.map((b) => ({ ...b })),
+    tunnels: infra.tunnels.map((b) => ({ ...b })),
+    hiddenMarks: [...infra.hiddenMarks],
   };
 }
 
 export const isEmptyInfra = (infra: Infra): boolean =>
   infra.roads === undefined && infra.rails.length === 0 && infra.seaRoutes.length === 0
-  && infra.ports.length === 0 && infra.facilities.length === 0;
+  && infra.ports.length === 0 && infra.facilities.length === 0
+  && infra.bridges.length === 0 && infra.tunnels.length === 0 && infra.hiddenMarks.length === 0;
 
 /** 경로 계산에 필요한 지형 정보 (WorldMap의 일부) */
 export interface Terrain {
@@ -177,6 +197,51 @@ export function addSeaRoute(infra: Infra, path: number[]): EditResult {
   return null;
 }
 
+/**
+ * 다리·터널을 직접 놓는다. 양 끝은 육지(호수 제외)여야 하고 길이는 MAX_SPAN_LENGTH 이하.
+ * 다리는 그 사이에 물(바다·호수·강)이 하나 이상 있어야 하고, 터널은 사이가 어떤 지형이든 된다 (해저 터널 포함).
+ */
+export function addSpan(t: Terrain, infra: Infra, kind: "bridge" | "tunnel", a: number, b: number): EditResult {
+  const label = kind === "bridge" ? "다리" : "터널";
+  if (a === b) return `${label}의 양 끝이 같습니다. 끌어서 두 지점을 이어 주세요.`;
+  if (!onLand(t, a) || !onLand(t, b)) return `${label}의 양 끝은 육지여야 합니다.`;
+  const len = distance(t.mesh, a, b);
+  if (len > MAX_SPAN_LENGTH) return `${label}는 ${MAX_SPAN_LENGTH}px까지 놓을 수 있습니다 (지금 ${Math.round(len)}px).`;
+  const list = kind === "bridge" ? infra.bridges : infra.tunnels;
+  if (list.length >= MAX_PATHS) return `${label}는 ${MAX_PATHS}개까지 놓을 수 있습니다.`;
+  if (list.some((s) => (s.a === a && s.b === b) || (s.a === b && s.b === a))) return `같은 자리에 이미 ${label}가 있습니다.`;
+  if (kind === "bridge" && !spanCells(t.mesh, a, b).some((c) => !onLand(t, c) || t.hydro.isRiver[c])) {
+    return "다리는 물(바다·호수·강)을 건너야 합니다. 물 건너편까지 끌어 주세요.";
+  }
+  list.push({ a, b });
+  return null;
+}
+
+/** a에서 b까지 곧은 선이 지나는 셀들 (양 끝 제외, 대략 셀 간격 절반마다 표본) */
+export function spanCells(mesh: Mesh, a: number, b: number): number[] {
+  const len = distance(mesh, a, b);
+  const steps = Math.max(1, Math.ceil(len / 4));
+  const out: number[] = [];
+  let last = a;
+  for (let s = 1; s < steps; s++) {
+    const t = s / steps;
+    const px = mesh.x[a] + (mesh.x[b] - mesh.x[a]) * t, py = mesh.y[a] + (mesh.y[b] - mesh.y[a]) * t;
+    // 가까운 이웃부터 따라가며 가장 가까운 셀을 찾는다 (전체 탐색보다 훨씬 빠름)
+    let cur = last, improved = true;
+    while (improved) {
+      improved = false;
+      let bestD = (mesh.x[cur] - px) ** 2 + (mesh.y[cur] - py) ** 2;
+      forEachNeighbor(mesh, cur, (j) => {
+        const d = (mesh.x[j] - px) ** 2 + (mesh.y[j] - py) ** 2;
+        if (d < bestD) { bestD = d; cur = j; improved = true; }
+      });
+    }
+    if (cur !== last && cur !== a && cur !== b) out.push(cur);
+    last = cur;
+  }
+  return out;
+}
+
 export type PointKind = "port" | "facility";
 
 /** (x, y)에서 radius 안의 가장 가까운 항구·시설물. 없으면 null. */
@@ -240,7 +305,7 @@ export interface PathMarks {
  * 경로에서 다리(강 건너기)와 터널(철도의 고산 구간)을 찾는다.
  * 강을 따라 길게 나란히 가는 구간(강 셀이 3칸 이상 연속)은 다리로 보지 않는다.
  */
-export function pathMarks(t: Terrain, path: number[], mode: "road" | "rail"): PathMarks {
+export function pathMarks(t: Terrain, path: number[], mode: "road" | "rail", hidden?: ReadonlySet<number>): PathMarks {
   const bridges: number[] = [];
   const tunnels: [number, number][] = [];
   let k = 0;
@@ -248,7 +313,9 @@ export function pathMarks(t: Terrain, path: number[], mode: "road" | "rail"): Pa
     if (t.hydro.isRiver[path[k]]) {
       let end = k;
       while (end + 1 < path.length && t.hydro.isRiver[path[end + 1]]) end++;
-      if (end - k + 1 <= 2 && k > 0 && end < path.length - 1) bridges.push(Math.floor((k + end) / 2));
+      const mid = Math.floor((k + end) / 2);
+      const isHidden = hidden && path.slice(k, end + 1).some((c) => hidden.has(c));
+      if (end - k + 1 <= 2 && k > 0 && end < path.length - 1 && !isHidden) bridges.push(mid);
       k = end + 1;
     } else k++;
   }
@@ -258,7 +325,7 @@ export function pathMarks(t: Terrain, path: number[], mode: "road" | "rail"): Pa
       if (t.elevation[path[k]] > TUNNEL_ELEVATION) {
         let end = k;
         while (end + 1 < path.length && t.elevation[path[end + 1]] > TUNNEL_ELEVATION) end++;
-        if (end > k) tunnels.push([k, end]);
+        if (end > k && !(hidden && path.slice(k, end + 1).some((c) => hidden.has(c)))) tunnels.push([k, end]);
         k = end + 1;
       } else k++;
     }
@@ -316,10 +383,14 @@ function segDist2(px: number, py: number, ax: number, ay: number, bx: number, by
 }
 
 /**
- * (x, y)에서 radius 안의 가장 가까운 시설을 지운다. 점(항구·시설물)이 선(도로·철도·항로)보다 우선.
- * 자동 도로를 지우면 그 전에 autoRoads를 고정한다. 지운 것의 설명을, 없으면 null을 돌려준다.
+ * (x, y)에서 radius 안의 가장 가까운 시설을 지운다. 우선순위는
+ * 점(항구·시설물) → 직접 놓은 다리·터널 → 자동 다리·터널 표기(숨김) → 선(도로·철도·항로).
+ * 자동 도로를 지우면 그 전에 autoRoads를 고정한다. t를 주면 자동 표기도 숨길 수 있다.
+ * 지운 것의 설명을, 없으면 null을 돌려준다.
  */
-export function eraseAt(mesh: Mesh, infra: Infra, x: number, y: number, radius: number, autoRoads: number[][]): string | null {
+export function eraseAt(
+  mesh: Mesh, infra: Infra, x: number, y: number, radius: number, autoRoads: number[][], t?: Terrain,
+): string | null {
   const r2 = radius * radius;
   const pointD = (cell: number): number => (mesh.x[cell] - x) ** 2 + (mesh.y[cell] - y) ** 2;
 
@@ -339,6 +410,50 @@ export function eraseAt(mesh: Mesh, infra: Infra, x: number, y: number, radius: 
     }
     const [f] = infra.facilities.splice(best.index, 1);
     return f.name ? `${FACILITY_INFO[f.kind].ko} '${f.name}'` : FACILITY_INFO[f.kind].ko;
+  }
+
+  // 직접 놓은 다리·터널
+  let span: { kind: "bridge" | "tunnel"; index: number; d: number } | undefined;
+  const spanD = (s: Span): number => segDist2(x, y, mesh.x[s.a], mesh.y[s.a], mesh.x[s.b], mesh.y[s.b]);
+  infra.bridges.forEach((s, index) => {
+    const d = spanD(s);
+    if (d <= r2 && (!span || d < span.d)) span = { kind: "bridge", index, d };
+  });
+  infra.tunnels.forEach((s, index) => {
+    const d = spanD(s);
+    if (d <= r2 && (!span || d < span.d)) span = { kind: "tunnel", index, d };
+  });
+  if (span) {
+    (span.kind === "bridge" ? infra.bridges : infra.tunnels).splice(span.index, 1);
+    return span.kind === "bridge" ? "다리" : "터널";
+  }
+
+  // 자동 다리·터널 표기: 지우지 않고 그 셀을 숨김 목록에 넣는다
+  if (t) {
+    const hidden = new Set(infra.hiddenMarks);
+    let mark: { cell: number; kind: string; d: number } | undefined;
+    const consider = (paths: number[][], mode: "road" | "rail"): void => {
+      for (const path of paths) {
+        const marks = pathMarks(t, path, mode, hidden);
+        for (const k of marks.bridges) {
+          const d = pointD(path[k]);
+          if (d <= r2 && (!mark || d < mark.d)) mark = { cell: path[k], kind: "다리 표기", d };
+        }
+        for (const [from, to] of marks.tunnels) {
+          for (let k = from; k < to; k++) {
+            const a = path[k], b = path[k + 1];
+            const d = segDist2(x, y, mesh.x[a], mesh.y[a], mesh.x[b], mesh.y[b]);
+            if (d <= r2 && (!mark || d < mark.d)) mark = { cell: path[k], kind: "터널 표기", d };
+          }
+        }
+      }
+    };
+    consider(visibleInfra(t, infra, autoRoads).roads, "road");
+    consider(visibleInfra(t, infra, autoRoads).rails, "rail");
+    if (mark) {
+      infra.hiddenMarks.push(mark.cell);
+      return `자동 ${mark.kind}`;
+    }
   }
 
   const pathD = (path: number[]): number => {
@@ -382,6 +497,7 @@ export function eraseAt(mesh: Mesh, infra: Infra, x: number, y: number, radius: 
  */
 export function visibleInfra(t: Terrain, infra: Infra, autoRoads: number[][]): {
   roads: number[][]; rails: number[][]; seaRoutes: number[][]; ports: PointFeature[]; facilities: Facility[];
+  bridges: Span[]; tunnels: Span[]; hiddenMarks: number[];
 } {
   const split = (paths: number[][]): number[][] => paths.flatMap((p) => {
     const out: number[][] = [];
@@ -400,6 +516,10 @@ export function visibleInfra(t: Terrain, infra: Infra, autoRoads: number[][]): {
     seaRoutes: infra.seaRoutes.filter((r) => r.slice(1, -1).every((c) => t.elevation[c] <= 0)),
     ports: infra.ports.filter((p) => onLand(t, p.cell)),
     facilities: infra.facilities.filter((f) => onLand(t, f.cell)),
+    // 다리·터널은 양 끝이 물에 잠기면 숨긴다
+    bridges: infra.bridges.filter((s) => onLand(t, s.a) && onLand(t, s.b)),
+    tunnels: infra.tunnels.filter((s) => onLand(t, s.a) && onLand(t, s.b)),
+    hiddenMarks: infra.hiddenMarks,
   };
 }
 
@@ -449,5 +569,21 @@ export function infraFromJSON(data: unknown, cellCount: number): Infra | undefin
     if (!f || !cell(f.cell) || n === false || typeof f.kind !== "string" || !(f.kind in FACILITY_INFO)) return undefined;
     facilities.push({ cell: f.cell, kind: f.kind as FacilityKind, name: n });
   }
-  return { roads, rails, seaRoutes, ports, facilities };
+  const spans = (v: unknown): Span[] | undefined => {
+    if (!Array.isArray(v) || v.length > MAX_PATHS) return undefined;
+    const out: Span[] = [];
+    for (const raw of v) {
+      const sp = raw as Record<string, unknown> | null;
+      if (!sp || !cell(sp.a) || !cell(sp.b) || sp.a === sp.b) return undefined;
+      out.push({ a: sp.a, b: sp.b });
+    }
+    return out;
+  };
+  const bridges = spans(o.bridges ?? []);
+  const tunnels = spans(o.tunnels ?? []);
+  const hiddenRaw = o.hiddenMarks ?? [];
+  if (!bridges || !tunnels || !Array.isArray(hiddenRaw) || hiddenRaw.length > MAX_POINTS * 4 || !hiddenRaw.every(cell)) {
+    return undefined;
+  }
+  return { roads, rails, seaRoutes, ports, facilities, bridges, tunnels, hiddenMarks: [...hiddenRaw] };
 }

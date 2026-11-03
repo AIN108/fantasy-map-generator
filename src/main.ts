@@ -6,12 +6,14 @@ import {
   applyBrush, BRUSH_TOOLS, decodeElevation, EditHistory, encodeElevation, type Brush, type BrushTool,
 } from "./editor.ts";
 import {
-  addFacility, addPath, addPort, addSeaRoute, cloneInfra, emptyInfra, eraseAt, FACILITY_INFO, hitPoint, infraFromJSON,
+  addFacility, addPath, addPort, addSeaRoute, addSpan, cloneInfra, MAX_SPAN_LENGTH, emptyInfra, eraseAt, FACILITY_INFO, hitPoint, infraFromJSON,
   infraToJSON, isEmptyInfra, movePoint, routePath, routeSea, type FacilityKind, type Infra, type PointKind,
 } from "./infra.ts";
 import { findCell, type Mesh } from "./mesh.ts";
 import type { NameStyle } from "./names.ts";
-import { buildRenderCache, DEFAULT_LAYERS, describeCell, renderWorld, type Layers, type RenderCache } from "./render.ts";
+import {
+  buildRenderCache, DEFAULT_LAYERS, describeCell, drawBridgeSpan, drawTunnelSpan, renderWorld, type Layers, type RenderCache,
+} from "./render.ts";
 import {
   applyInfra, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors, parseMapJSON,
   sanitizeAnchors, terrainKey, toJSON, type NameAnchors, type WorldMap, type WorldOptions,
@@ -85,15 +87,17 @@ const copySnapshot = (s: Snapshot): Snapshot => ({
 const editHistory = new EditHistory<Snapshot>(50, copySnapshot);
 
 type EditTarget = "terrain" | "city" | "border" | "infra";
-type InfraTool = "road" | "rail" | "sea" | "port" | "facility" | "move" | "erase";
+type InfraTool = "road" | "rail" | "sea" | "bridge" | "tunnel" | "port" | "facility" | "move" | "erase";
 const INFRA_TOOL_HINTS: Record<InfraTool, string> = {
   road: "출발점에서 도착점까지 끌어 놓으면 지형을 따라 도로가 생깁니다. 도시 근처에서 놓으면 도시에 붙습니다.",
   rail: "출발점에서 도착점까지 끌어 놓으면 철도가 생깁니다. 철도는 급경사를 피해 산을 크게 돌아갑니다.",
   sea: "항구에서 다른 항구까지 끌어 놓으면 바다를 따라 항로가 생깁니다. 얕은 연안보다 깊은 바다를 조금 더 선호합니다.",
+  bridge: `육지에서 물 건너편 육지까지 끌어 놓으면 곧은 다리가 놓입니다 (강·호수·해협, ${MAX_SPAN_LENGTH}px까지).`,
+  tunnel: `두 육지 지점 사이를 끌어 놓으면 곧은 터널이 놓입니다. 산을 관통하거나 바다 밑으로 지날 수 있습니다 (${MAX_SPAN_LENGTH}px까지).`,
   port: "바다에 닿은 해안을 누르면 항구가 생깁니다.",
   facility: "고른 종류의 시설물을 누른 자리에 둡니다. 등대는 해안에만 둘 수 있습니다.",
   move: "항구·시설물을 끌어 옮깁니다. 항구를 옮기면 이어진 항로도 새 자리로 다시 계산합니다.",
-  erase: "누른 곳에서 가장 가까운 항구·시설물·도로·철도·항로를 지웁니다.",
+  erase: "누른 곳에서 가장 가까운 시설을 지웁니다. 자동 다리·터널 표기를 누르면 그 표기만 숨깁니다.",
 };
 type CityTool = "move" | "add" | "delete" | "rename" | "capital" | "newState";
 const CITY_TOOL_HINTS: Record<CityTool, string> = {
@@ -165,6 +169,16 @@ function readForm(): WorldOptions {
 function setStatus(text: string, isError = false): void {
   statusEl.textContent = text;
   statusEl.classList.toggle("error", isError);
+}
+
+/**
+ * 목적격 조사: 마지막 글자에 받침이 있으면 '을', 없으면 '를'. 한글로 끝나지 않으면(서구풍 지명 등) '을(를)'.
+ */
+function eul(word: string): string {
+  const w = word.replace(/['"’)\s]+$/u, ""); // "항구 '하늬항'"처럼 따옴표로 끝나면 그 앞 글자로 판단
+  const code = w.charCodeAt(w.length - 1) - 0xac00;
+  if (!(code >= 0 && code <= 11171)) return "을(를)";
+  return code % 28 === 0 ? "를" : "을";
 }
 
 // ── 그리기 ───────────────────────────────────────────────────────────
@@ -519,6 +533,16 @@ function drawInfraCursor(x: number, y: number): void {
     strokeCircle(mesh.x[to], mesh.y[to], 8);
     return;
   }
+  if (isSpanTool() && routeStart >= 0) {
+    const end = findCell(mesh, x, y);
+    const [ax, ay, bx, by] = [mesh.x[routeStart], mesh.y[routeStart], mesh.x[end], mesh.y[end]];
+    const tooLong = Math.hypot(bx - ax, by - ay) > MAX_SPAN_LENGTH;
+    o.globalAlpha = tooLong ? 0.4 : 0.9;
+    if (infraTool === "bridge") drawBridgeSpan(o, ax, ay, bx, by); else drawTunnelSpan(o, ax, ay, bx, by);
+    o.globalAlpha = 1;
+    strokeCircle(ax, ay, 5);
+    return;
+  }
   if (isLineTool() && routeStart >= 0) {
     if (routePreview && routePreview.length >= 2) {
       o.beginPath();
@@ -647,6 +671,7 @@ function snapToPort(x: number, y: number): number {
 }
 
 const isLineTool = (): boolean => infraTool === "road" || infraTool === "rail" || infraTool === "sea";
+const isSpanTool = (): boolean => infraTool === "bridge" || infraTool === "tunnel";
 
 function takeFeatureName(): string | undefined {
   const input = $<HTMLInputElement>("featureName");
@@ -662,14 +687,19 @@ function handleInfraClick(x: number, y: number): void {
     applyInfraEdit((inf) => addPort(world!, inf, cell, takeFeatureName()), "항구를 놓았습니다.");
   } else if (infraTool === "facility") {
     const kind = $<HTMLSelectElement>("facilityKind").value as FacilityKind;
-    applyInfraEdit((inf) => addFacility(world!, inf, cell, kind, takeFeatureName()), `${FACILITY_INFO[kind]?.ko ?? "시설"}을(를) 놓았습니다.`);
+    applyInfraEdit((inf) => addFacility(world!, inf, cell, kind, takeFeatureName()), `${FACILITY_INFO[kind]?.ko ?? "시설"}${eul(FACILITY_INFO[kind]?.ko ?? "시설")} 놓았습니다.`);
   } else if (infraTool === "erase") {
     let removed: string | null = null;
     applyInfraEdit((inf) => {
-      removed = eraseAt(mesh!, inf, x, y, hitRadius(), autoRoads);
+      removed = eraseAt(mesh!, inf, x, y, hitRadius(), autoRoads, world!);
       return removed ? null : "지울 시설이 없습니다. 항구·시설물·도로·철도 가까이를 눌러 주세요.";
     });
-    if (removed) setStatus(`${removed}을(를) 지웠습니다.`);
+    if (removed) {
+      const what = removed as string;
+      setStatus(what.startsWith("자동")
+        ? `${what}${eul(what)} 숨겼습니다. 되돌리기로 다시 보이게 할 수 있습니다.`
+        : `${what}${eul(what)} 지웠습니다.`);
+    }
   }
 }
 
@@ -744,14 +774,14 @@ function handleCityClick(x: number, y: number): void {
   if (visible < 0) { setStatus("도시를 눌러 주세요.", true); return; }
   const name = world.cities[visible].name;
   if (cityTool === "delete") {
-    if (!confirm(`'${name}'을(를) 지울까요?`)) return;
-    applyCivEdit((c) => deleteCity(c, civIndex(c)), `'${name}'을(를) 지웠습니다.`);
+    if (!confirm(`'${name}'${eul(name)} 지울까요?`)) return;
+    applyCivEdit((c) => deleteCity(c, civIndex(c)), `'${name}'${eul(name)} 지웠습니다.`);
   } else if (cityTool === "rename") {
     const next = prompt("새 도시 이름", name);
     if (next === null || next.trim() === name) return;
     applyCivEdit((c) => renameCity(c, civIndex(c), next, style), "이름을 바꿨습니다.");
   } else if (cityTool === "capital") {
-    applyCivEdit((c) => makeCapital(c, civIndex(c)), `'${name}'을(를) 수도로 정했습니다.`);
+    applyCivEdit((c) => makeCapital(c, civIndex(c)), `'${name}'${eul(name)} 수도로 정했습니다.`);
   } else if (cityTool === "newState") {
     // 무소속 땅에 세울 때 가져갈 범위: 나라 하나가 차지할 법한 면적의 반지름 절반쯤
     const claim = Math.sqrt((options.width * options.height * options.landRatio) / Math.max(1, world.states.length + 1)) * 0.5;
@@ -761,7 +791,7 @@ function handleCityClick(x: number, y: number): void {
       const created = world.states[world.states.length - 1];
       paintStateEl.value = String(created.id);
       renderMergeTargets();
-      setStatus(`'${name}'을(를) 수도로 하는 새 나라 '${created.name}'을(를) 세웠습니다. 국경 탭에서 영토를 다듬을 수 있습니다.`);
+      setStatus(`'${name}'${eul(name)} 수도로 하는 새 나라 '${created.name}'${eul(created.name)} 세웠습니다. 국경 탭에서 영토를 다듬을 수 있습니다.`);
     }
   }
 }
@@ -774,6 +804,9 @@ canvas.addEventListener("pointerdown", (e) => {
     if (infraTool === "road" || infraTool === "rail") {
       routeStart = snapToCity(x, y);
       routePreview = null;
+      canvas.setPointerCapture(e.pointerId);
+    } else if (isSpanTool()) {
+      routeStart = findCell(mesh, x, y);
       canvas.setPointerCapture(e.pointerId);
     } else if (infraTool === "sea") {
       const start = snapToPort(x, y);
@@ -822,7 +855,7 @@ canvas.addEventListener("pointermove", (e) => {
   const [x, y] = toMapCoords(e);
   if (editMode) drawCursor(x, y);
   if (routeStart >= 0) {
-    queueRoutePreview(x, y);
+    if (!isSpanTool()) queueRoutePreview(x, y);
     return;
   }
   if (draggingPoint) return;
@@ -872,6 +905,12 @@ function endPointer(e: PointerEvent): void {
     clearOverlay();
     if (!world || !mesh) return;
     const [x, y] = toMapCoords(e);
+    if (isSpanTool()) {
+      const kind = infraTool === "bridge" ? "bridge" : "tunnel";
+      const end = findCell(mesh, x, y);
+      applyInfraEdit((inf) => addSpan(world!, inf, kind, start, end), kind === "bridge" ? "다리를 놓았습니다." : "터널을 놓았습니다.");
+      return;
+    }
     if (infraTool === "sea") {
       const end = snapToPort(x, y);
       if (end < 0) { setStatus("항로는 다른 항구에서 끝나야 합니다. 항구 위에서 놓아 주세요.", true); return; }
@@ -978,7 +1017,7 @@ async function importFile(file: File): Promise<void> {
   const extras = [
     edited ? "편집된 지형" : "", civ ? "직접 편집한 도시·국경" : "", isEmptyInfra(infra) ? "" : "도로·철도·시설",
   ].filter(Boolean).join(", ");
-  setStatus(`${file.name}을(를) 불러왔습니다.${extras ? ` (${extras} 포함)` : ""}`);
+  setStatus(`${file.name}${eul(file.name)} 불러왔습니다.${extras ? ` (${extras} 포함)` : ""}`);
 }
 
 // ── 이벤트 연결 ─────────────────────────────────────────────────────
@@ -1072,8 +1111,8 @@ $("deleteState").addEventListener("click", () => {
   if (!state) { setStatus("없앨 국가를 먼저 고르세요.", true); return; }
   const merge = Number(mergeIntoEl.value);
   const dest = merge >= 0 ? `'${world.states[merge]?.name}'에 합칩니다` : "무소속이 됩니다";
-  if (!confirm(`'${state.name}'을(를) 없앨까요? 영토는 ${dest}. 수도였던 도시는 일반 도시로 남습니다. (되돌리기로 복구할 수 있습니다)`)) return;
-  applyCivEdit((c) => deleteState(c, id, merge), `'${state.name}'을(를) 없앴습니다.`);
+  if (!confirm(`'${state.name}'${eul(state.name)} 없앨까요? 영토는 ${dest}. 수도였던 도시는 일반 도시로 남습니다. (되돌리기로 복구할 수 있습니다)`)) return;
+  applyCivEdit((c) => deleteState(c, id, merge), `'${state.name}'${eul(state.name)} 없앴습니다.`);
 });
 $("renameState").addEventListener("click", () => {
   if (!world) return;

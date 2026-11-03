@@ -279,6 +279,8 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
     ctx.setLineDash([]);
   }
 
+  const hidden = new Set(world.hiddenMarks);
+
   // 5-1) 해상 항로: 남색 긴 점선
   if (layers.seaRoutes && world.seaRoutes.length > 0) {
     ctx.strokeStyle = "rgba(18,38,78,0.8)";
@@ -303,7 +305,7 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
     }
     ctx.setLineDash([]);
     for (const road of world.roads) {
-      for (const k of pathMarks(world, road, "road").bridges) drawBridge(ctx, mesh, road, k, "rgba(110,70,40,0.95)");
+      for (const k of pathMarks(world, road, "road", hidden).bridges) drawBridge(ctx, mesh, road, k, "rgba(110,70,40,0.95)");
     }
   }
 
@@ -311,7 +313,7 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
   if (layers.rails && world.rails.length > 0) {
     ctx.lineCap = "butt";
     for (const rail of world.rails) {
-      const marks = pathMarks(world, rail, "rail");
+      const marks = pathMarks(world, rail, "rail", hidden);
       // 터널 구간을 뺀 나머지를 철도 표기로 그린다 (조각 경계는 한 셀씩 겹쳐 끊김 없이)
       let from = 0;
       const pieces: number[][] = [];
@@ -337,9 +339,15 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
     }
   }
 
+  // 6-2) 직접 놓은 다리·터널 (도로·철도 레이어 중 하나라도 켜져 있으면 그린다)
+  if (layers.roads || layers.rails) {
+    for (const s of world.tunnels) drawTunnelSpan(ctx, mesh.x[s.a], mesh.y[s.a], mesh.x[s.b], mesh.y[s.b]);
+    for (const s of world.bridges) drawBridgeSpan(ctx, mesh.x[s.a], mesh.y[s.a], mesh.x[s.b], mesh.y[s.b]);
+  }
+
   const placer = new LabelPlacer(ctx, mesh.width, mesh.height);
 
-  // 6-2) 항구·시설물 아이콘
+  // 6-3) 항구·시설물 아이콘
   if (layers.facilities) {
     for (const port of world.ports) {
       const x = mesh.x[port.cell], y = mesh.y[port.cell];
@@ -462,6 +470,59 @@ function drawBridge(ctx: CanvasRenderingContext2D, mesh: Mesh, path: number[], k
   ctx.moveTo(-7, -4); ctx.lineTo(-5, -2.2); ctx.lineTo(5, -2.2); ctx.lineTo(7, -4);
   ctx.moveTo(-7, 4); ctx.lineTo(-5, 2.2); ctx.lineTo(5, 2.2); ctx.lineTo(7, 4);
   ctx.stroke();
+  ctx.restore();
+}
+
+/** 직접 놓은 다리: 두 점 사이 상판과 난간, 양 끝 날개 */
+export function drawBridgeSpan(ctx: CanvasRenderingContext2D, ax: number, ay: number, bx: number, by: number): void {
+  const len = Math.hypot(bx - ax, by - ay);
+  ctx.save();
+  ctx.translate(ax, ay);
+  ctx.rotate(Math.atan2(by - ay, bx - ax));
+  ctx.fillStyle = "rgba(244,241,234,0.95)";
+  ctx.fillRect(-2, -2.6, len + 4, 5.2);
+  ctx.strokeStyle = "#3a2f25";
+  ctx.lineWidth = 1.2;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(-4.5, -5); ctx.lineTo(-2, -2.6); ctx.lineTo(len + 2, -2.6); ctx.lineTo(len + 4.5, -5);
+  ctx.moveTo(-4.5, 5); ctx.lineTo(-2, 2.6); ctx.lineTo(len + 2, 2.6); ctx.lineTo(len + 4.5, 5);
+  ctx.stroke();
+  // 교각: 긴 다리일수록 여러 개
+  const piers = Math.max(0, Math.floor(len / 28));
+  ctx.lineWidth = 1;
+  for (let k = 1; k <= piers; k++) {
+    const px = (len * k) / (piers + 1);
+    ctx.beginPath();
+    ctx.moveTo(px, -2.6); ctx.lineTo(px, 2.6);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** 직접 놓은 터널: 두 점 사이 회색 점선과 양 끝 입구 */
+export function drawTunnelSpan(ctx: CanvasRenderingContext2D, ax: number, ay: number, bx: number, by: number): void {
+  const angle = Math.atan2(by - ay, bx - ax);
+  ctx.save();
+  ctx.strokeStyle = "rgba(60,60,60,0.8)";
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([2, 3]);
+  ctx.beginPath();
+  ctx.moveTo(ax, ay);
+  ctx.lineTo(bx, by);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  for (const [x, y, rot] of [[ax, ay, angle], [bx, by, angle + Math.PI]] as const) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rot);
+    ctx.beginPath();
+    ctx.arc(0, 0, 4.5, -Math.PI / 2, Math.PI / 2);
+    ctx.strokeStyle = "#2b2b2b";
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+    ctx.restore();
+  }
   ctx.restore();
 }
 

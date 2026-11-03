@@ -10,7 +10,7 @@ import { buildMesh, type Mesh } from "./mesh.ts";
 import { NameGenerator, type NameStyle } from "./names.ts";
 import { cellHash, subRng } from "./rng.ts";
 import { civFromJSON, civToJSON, type CivState } from "./civedit.ts";
-import { infraFromJSON, infraToJSON, isEmptyInfra, visibleInfra, type Facility, type Infra, type PointFeature } from "./infra.ts";
+import { infraFromJSON, infraToJSON, isEmptyInfra, visibleInfra, type Facility, type Infra, type PointFeature, type Span } from "./infra.ts";
 import { generateElevation } from "./terrain.ts";
 
 export interface WorldOptions {
@@ -72,6 +72,10 @@ export interface WorldMap {
   seaRoutes: number[][];
   ports: PointFeature[];
   facilities: Facility[];
+  /** 직접 놓은 다리·터널, 숨긴 자동 표기 셀 */
+  bridges: Span[];
+  tunnels: Span[];
+  hiddenMarks: number[];
   peaks: Peak[];
 }
 
@@ -148,7 +152,7 @@ export function deriveWorld(
     return {
       options, mesh, elevation, temperature, moisture, biome, hydro, rivers,
       owner: new Int32Array(mesh.count).fill(-1), states: [], cities: [], roads: [], peaks: [],
-      rails: [], seaRoutes: [], ports: [], facilities: [],
+      rails: [], seaRoutes: [], ports: [], facilities: [], bridges: [], tunnels: [], hiddenMarks: [],
     };
   }
 
@@ -226,7 +230,7 @@ export function deriveWorld(
 
   return {
     options, mesh, elevation, temperature, moisture, biome, hydro, rivers, owner, states, cities, roads, peaks,
-    rails: [], seaRoutes: [], ports: [], facilities: [],
+    rails: [], seaRoutes: [], ports: [], facilities: [], bridges: [], tunnels: [], hiddenMarks: [],
   };
 }
 
@@ -293,7 +297,7 @@ function deriveEditedCiv(
 
   return {
     options, mesh, elevation, temperature: rest.temperature, moisture: rest.moisture, biome, hydro,
-    rivers: rest.rivers, owner, states, cities, roads, peaks, rails: [], seaRoutes: [], ports: [], facilities: [],
+    rivers: rest.rivers, owner, states, cities, roads, peaks, rails: [], seaRoutes: [], ports: [], facilities: [], bridges: [], tunnels: [], hiddenMarks: [],
   };
 }
 
@@ -466,6 +470,8 @@ export function toJSON(world: WorldMap, civ?: CivState, infra?: Infra): object {
     ...(infra && !isEmptyInfra(infra) ? { infra: infraToJSON(infra) } : {}),
     rails: world.rails,
     seaRoutes: world.seaRoutes,
+    bridges: world.bridges,
+    tunnels: world.tunnels,
     ports: world.ports,
     facilities: world.facilities,
   };
@@ -477,7 +483,7 @@ export function toJSON(world: WorldMap, civ?: CivState, infra?: Infra): object {
  */
 export function applyInfra(world: WorldMap, infra: Infra): WorldMap {
   const v = visibleInfra(world, infra, world.roads);
-  return { ...world, roads: v.roads, rails: v.rails, seaRoutes: v.seaRoutes, ports: v.ports, facilities: v.facilities };
+  return { ...world, ...v };
 }
 
 /**

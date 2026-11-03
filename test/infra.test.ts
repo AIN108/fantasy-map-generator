@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { applyBrush } from "../src/editor.ts";
 import {
-  addFacility, addPath, addPort, addSeaRoute, cloneInfra, emptyInfra, eraseAt, hitPoint, infraFromJSON, infraToJSON,
+  addFacility, addPath, addPort, addSeaRoute, addSpan, cloneInfra, MAX_SPAN_LENGTH, spanCells, emptyInfra, eraseAt, hitPoint, infraFromJSON, infraToJSON,
   isEmptyInfra, movePoint, pathMarks, routePath, routeSea, TUNNEL_ELEVATION, visibleInfra, type Infra,
 } from "../src/infra.ts";
 import { forEachNeighbor } from "../src/mesh.ts";
@@ -338,5 +338,110 @@ describe("저장 형식 (항로)", () => {
     const legacy = infraFromJSON({ rails: [], ports: [], facilities: [] }, mesh.count)!;
     assert.deepEqual(legacy.seaRoutes, []);
     assert.equal(infraFromJSON({ ...infraToJSON(infra), seaRoutes: [[1]] }, mesh.count), undefined);
+  });
+});
+
+describe("다리·터널 직접 놓기", () => {
+  /** 바다·호수·강을 사이에 둔 두 육지 셀 (MAX_SPAN_LENGTH 이내) */
+  function acrossWater(): [number, number] {
+    const lands = Array.from({ length: mesh.count }, (_, i) => i).filter(land);
+    for (const a of lands) {
+      for (const b of lands) {
+        const d = Math.hypot(mesh.x[a] - mesh.x[b], mesh.y[a] - mesh.y[b]);
+        if (d < 30 || d > 90) continue;
+        if (spanCells(mesh, a, b).some((c) => !land(c))) return [a, b];
+      }
+    }
+    throw new Error("물 건너편 셀 쌍 없음");
+  }
+  /** 사이가 모두 육지이고 강도 없는 두 셀 */
+  function overLand(): [number, number] {
+    const lands = Array.from({ length: mesh.count }, (_, i) => i).filter((i) => land(i) && !world.hydro.isRiver[i]);
+    for (const a of lands) {
+      for (const b of lands) {
+        const d = Math.hypot(mesh.x[a] - mesh.x[b], mesh.y[a] - mesh.y[b]);
+        if (d < 40 || d > 80) continue;
+        if (spanCells(mesh, a, b).every((c) => land(c) && !world.hydro.isRiver[c])) return [a, b];
+      }
+    }
+    throw new Error("육지 위 셀 쌍 없음");
+  }
+
+  test("spanCells는 두 점 사이 직선이 지나는 셀을 순서대로 돌려준다", () => {
+    const [a, b] = acrossWater();
+    const cells = spanCells(mesh, a, b);
+    assert.ok(cells.length >= 2);
+    assert.ok(!cells.includes(a) && !cells.includes(b));
+    // 순서대로 b에 가까워진다 (대체로)
+    const d = (c: number): number => Math.hypot(mesh.x[c] - mesh.x[b], mesh.y[c] - mesh.y[b]);
+    assert.ok(d(cells[0]) > d(cells[cells.length - 1]));
+  });
+
+  test("다리는 물을 건너야 하고, 터널은 육지 위에도 놓을 수 있다", () => {
+    const infra = emptyInfra();
+    const [wa, wb] = acrossWater();
+    const [la, lb] = overLand();
+    assert.equal(addSpan(world, infra, "bridge", wa, wb), null);
+    assert.match(addSpan(world, infra, "bridge", la, lb)!, /물/);
+    assert.equal(addSpan(world, infra, "tunnel", la, lb), null);
+    assert.equal(addSpan(world, infra, "tunnel", wa, wb), null, "해저 터널도 된다");
+    assert.equal(infra.bridges.length, 1);
+    assert.equal(infra.tunnels.length, 2);
+  });
+
+  test("양 끝이 물·같은 점이거나, 너무 길거나, 이미 있으면 거부한다", () => {
+    const infra = emptyInfra();
+    const [wa, wb] = acrossWater();
+    assert.match(addSpan(world, infra, "bridge", wa, wa)!, /같습니다/);
+    assert.match(addSpan(world, infra, "bridge", wa, ocean)!, /육지/);
+    const far = Array.from({ length: mesh.count }, (_, i) => i)
+      .find((i) => land(i) && Math.hypot(mesh.x[i] - mesh.x[wa], mesh.y[i] - mesh.y[wa]) > MAX_SPAN_LENGTH + 20)!;
+    assert.match(addSpan(world, infra, "tunnel", wa, far)!, /px까지/);
+    addSpan(world, infra, "bridge", wa, wb);
+    assert.match(addSpan(world, infra, "bridge", wb, wa)!, /이미/);
+  });
+
+  test("지우기는 직접 놓은 다리·터널을 지운다", () => {
+    const infra = emptyInfra();
+    const [wa, wb] = acrossWater();
+    addSpan(world, infra, "bridge", wa, wb);
+    const mx = (mesh.x[wa] + mesh.x[wb]) / 2, my = (mesh.y[wa] + mesh.y[wb]) / 2;
+    assert.equal(eraseAt(mesh, infra, mx, my, 8, [], world), "다리");
+    assert.equal(infra.bridges.length, 0);
+  });
+
+  test("자동 다리 표기를 지우기로 누르면 그 표기만 숨긴다 (도로는 그대로)", () => {
+    const road = world.roads.find((r) => pathMarks(world, r, "road").bridges.length > 0);
+    if (!road) return; // 이 시드의 자동 도로에 다리가 없으면 건너뜀
+    const k = pathMarks(world, road, "road").bridges[0];
+    const infra = emptyInfra();
+    const removed = eraseAt(mesh, infra, mesh.x[road[k]], mesh.y[road[k]], 6, world.roads, world);
+    assert.equal(removed, "자동 다리 표기");
+    assert.equal(infra.roads, undefined, "자동 도로는 고정하지 않는다");
+    assert.equal(pathMarks(world, road, "road", new Set(infra.hiddenMarks)).bridges.includes(k), false);
+  });
+
+  test("양 끝이 물에 잠긴 다리·터널은 숨긴다", () => {
+    const infra = emptyInfra();
+    const [la, lb] = overLand();
+    addSpan(world, infra, "tunnel", la, lb);
+    const e = Float64Array.from(elevation);
+    for (let k = 0; k < 80; k++) applyBrush(mesh, e, { tool: "lower", radius: 15, strength: 1 }, mesh.x[la], mesh.y[la]);
+    assert.equal(visibleInfra(deriveWorld(OPTS, mesh, e), infra, []).tunnels.length, 0);
+    assert.equal(visibleInfra(world, infra, []).tunnels.length, 1);
+  });
+
+  test("다리·터널·숨긴 표기도 저장·불러오기 되고, 예전 형식도 읽는다", () => {
+    const infra = emptyInfra();
+    const [wa, wb] = acrossWater();
+    addSpan(world, infra, "bridge", wa, wb);
+    infra.hiddenMarks.push(5);
+    const back = infraFromJSON(JSON.parse(JSON.stringify(infraToJSON(infra))), mesh.count)!;
+    assert.deepEqual(back.bridges, infra.bridges);
+    assert.deepEqual(back.hiddenMarks, [5]);
+    const legacy = infraFromJSON({ rails: [], seaRoutes: [], ports: [], facilities: [] }, mesh.count)!;
+    assert.deepEqual([legacy.bridges, legacy.tunnels, legacy.hiddenMarks], [[], [], []]);
+    assert.equal(infraFromJSON({ ...infraToJSON(infra), bridges: [{ a: 1, b: 1 }] }, mesh.count), undefined);
+    assert.equal(infraFromJSON({ ...infraToJSON(infra), hiddenMarks: [-1] }, mesh.count), undefined);
   });
 });
