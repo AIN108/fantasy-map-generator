@@ -192,6 +192,17 @@ function eul(word: string): string {
 // 기기 픽셀(캔버스 실제 해상도 = 화면 표시 크기 × devicePixelRatio). pixelRatio()가 보기 좌표 → 기기 픽셀 배율이다.
 const pixelRatio = (): number => canvas.width / options.width;
 
+/**
+ * 좁은 화면에서 지명·도시·시설 표시를 키우는 배율. 지도를 표시 크기로 줄였을 때 글자가
+ * 원래 크기의 MIN_TEXT_RATIO보다 작아지지 않게 한다 (넓은 화면에서는 1, 휴대폰에서는 약 3).
+ */
+const MIN_TEXT_RATIO = 0.85;
+function textScale(): number {
+  const cssWidth = canvas.getBoundingClientRect().width;
+  if (!(cssWidth > 0)) return 1;
+  return Math.min(3, Math.max(1, MIN_TEXT_RATIO / (cssWidth / options.width)));
+}
+
 /** 지명을 뺀 전체 지도 사본 (확대·이동 중 늘려 쓰는 바탕, 기기 픽셀 해상도) */
 const baseCanvas = document.createElement("canvas");
 let baseFresh = false;
@@ -232,22 +243,22 @@ function draw(fast = false): void {
     lowCanvas.height = Math.max(1, Math.round((cssWidth * options.height) / options.width));
     const l = lowCanvas.getContext("2d")!;
     l.setTransform(s * lr, 0, 0, s * lr, -view.x * s * lr, -view.y * s * lr);
-    renderWorld(l, world, cache, layers, s, "base");
+    renderWorld(l, world, cache, layers, s, "base", textScale());
     ctx!.clearRect(0, 0, canvas.width, canvas.height);
     ctx!.drawImage(lowCanvas, 0, 0, canvas.width, canvas.height);
     ctx!.setTransform(s * r, 0, 0, s * r, -view.x * s * r, -view.y * s * r);
-    renderWorld(ctx!, world, cache, layers, s, "labels");
+    renderWorld(ctx!, world, cache, layers, s, "labels", textScale());
   } else if (s === 1) {
     // 전체 보기: 바탕을 사본에 그려 옮기고 지명만 덧그린다 (사본을 따로 만드는 비용이 들지 않는다).
     renderBase();
     ctx!.clearRect(0, 0, canvas.width, canvas.height);
     ctx!.drawImage(baseCanvas, 0, 0);
     ctx!.setTransform(r, 0, 0, r, 0, 0);
-    renderWorld(ctx!, world, cache, layers, 1, "labels");
+    renderWorld(ctx!, world, cache, layers, 1, "labels", textScale());
   } else {
     baseFresh = false;
     ctx!.setTransform(s * r, 0, 0, s * r, -view.x * s * r, -view.y * s * r);
-    renderWorld(ctx!, world, cache, layers, s);
+    renderWorld(ctx!, world, cache, layers, s, "all", textScale());
   }
   ctx!.setTransform(1, 0, 0, 1, 0, 0);
 }
@@ -259,7 +270,7 @@ function renderBase(): void {
   baseCanvas.height = canvas.height;
   const b = baseCanvas.getContext("2d")!;
   b.setTransform(r, 0, 0, r, 0, 0);
-  renderWorld(b, world, cache, layers, 1, "base");
+  renderWorld(b, world, cache, layers, 1, "base", textScale());
   baseFresh = true;
 }
 
@@ -310,7 +321,7 @@ function drawFast(): void {
   ctx!.drawImage(baseCanvas, view.x * r, view.y * r, w / s, h / s, 0, 0, w, h);
   // 지명은 늘리지 않고 현재 배율에 맞춰 새로 배치한다 (움직이는 동안에도 글자 크기가 그대로).
   ctx!.setTransform(s * r, 0, 0, s * r, -view.x * s * r, -view.y * s * r);
-  renderWorld(ctx!, world, cache, layers, s, "labels");
+  renderWorld(ctx!, world, cache, layers, s, "labels", textScale());
   ctx!.setTransform(1, 0, 0, 1, 0, 0);
 }
 

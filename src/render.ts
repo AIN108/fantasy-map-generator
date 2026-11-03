@@ -219,15 +219,23 @@ export type RenderPart = "all" | "base" | "labels";
  * zoom: 현재 확대 배율. 지명 글자는 이 값으로 나눠 그려서 화면에서 늘 같은 크기로 보이고,
  * 확대할수록 글자끼리 덜 겹쳐 더 많은 지명이 드러난다. 지형·선·아이콘은 지도와 함께 커진다.
  * part: "base"는 지명 없이 바탕만(확대·이동 중 늘려 쓸 사본용), "labels"는 그 위에 지명만 덧그린다.
+ * textScale: 지명과 도시·시설 표시를 키우는 배율. 지도를 작게 줄여 보여 주는 좁은 화면에서
+ * 글자·아이콘이 읽을 수 없을 만큼 작아지지 않게 1보다 크게 준다. 키운 만큼 겹치는 지명은 덜 그려진다.
+ * 글자는 확대와 관계없이 이 배율을 유지하고, 표시(아이콘)는 확대할수록 원래 크기로 돌아간다.
  */
 export function renderWorld(
   ctx: CanvasRenderingContext2D, world: WorldMap, cache: RenderCache, layers: Layers, zoom = 1, part: RenderPart = "all",
+  textScale = 1,
 ): void {
-  if (part !== "labels") drawBase(ctx, world, cache, layers);
-  if (part !== "base" && layers.labels) drawLabels(ctx, world, layers, Number.isFinite(zoom) && zoom > 0 ? 1 / zoom : 1);
+  const t = Number.isFinite(textScale) && textScale > 0 ? textScale : 1;
+  const z = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+  // 도시·시설 표시는 지도와 함께 커지므로, 키운 배율은 확대할수록 줄여 원래 크기로 돌아가게 한다.
+  const m = Math.max(1, t / z);
+  if (part !== "labels") drawBase(ctx, world, cache, layers, m);
+  if (part !== "base" && layers.labels) drawLabels(ctx, world, layers, t / z, m);
 }
 
-function drawBase(ctx: CanvasRenderingContext2D, world: WorldMap, cache: RenderCache, layers: Layers): void {
+function drawBase(ctx: CanvasRenderingContext2D, world: WorldMap, cache: RenderCache, layers: Layers, m: number): void {
   const { mesh, elevation, hydro } = world;
   ctx.save();
   ctx.clearRect(0, 0, mesh.width, mesh.height);
@@ -398,12 +406,10 @@ function drawBase(ctx: CanvasRenderingContext2D, world: WorldMap, cache: RenderC
   // 6-3) 항구·시설물 아이콘
   if (layers.facilities) {
     for (const port of world.ports) {
-      const x = mesh.x[port.cell], y = mesh.y[port.cell];
-      drawFacilityIcon(ctx, "port", x, y);
+      drawScaledIcon(ctx, "port", mesh.x[port.cell], mesh.y[port.cell], m);
     }
     for (const f of world.facilities) {
-      const x = mesh.x[f.cell], y = mesh.y[f.cell];
-      drawFacilityIcon(ctx, f.kind, x, y);
+      drawScaledIcon(ctx, f.kind, mesh.x[f.cell], mesh.y[f.cell], m);
     }
   }
 
@@ -413,13 +419,13 @@ function drawBase(ctx: CanvasRenderingContext2D, world: WorldMap, cache: RenderC
       const x = mesh.x[c.cell], y = mesh.y[c.cell];
       ctx.beginPath();
       if (c.capital) {
-        ctx.rect(x - 4, y - 4, 8, 8);
+        ctx.rect(x - 4 * m, y - 4 * m, 8 * m, 8 * m);
       } else {
-        ctx.arc(x, y, 2.6, 0, Math.PI * 2);
+        ctx.arc(x, y, 2.6 * m, 0, Math.PI * 2);
       }
       ctx.fillStyle = c.capital ? "#b3261e" : "#fff";
       ctx.strokeStyle = "#222";
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = 1.2 * m;
       ctx.fill();
       ctx.stroke();
     }
@@ -429,19 +435,30 @@ function drawBase(ctx: CanvasRenderingContext2D, world: WorldMap, cache: RenderC
 }
 
 /** 지명을 덧그린다. k = 1 / 확대 배율 (글자 크기·간격을 화면 기준으로 고정). */
-function drawLabels(ctx: CanvasRenderingContext2D, world: WorldMap, layers: Layers, k: number): void {
+/** 시설 아이콘을 m배로 그린다. */
+function drawScaledIcon(ctx: CanvasRenderingContext2D, kind: FacilityKind | "port", x: number, y: number, m: number): void {
+  if (m === 1) { drawFacilityIcon(ctx, kind, x, y); return; }
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(m, m);
+  drawFacilityIcon(ctx, kind, 0, 0);
+  ctx.restore();
+}
+
+/** 지명을 덧그린다. k = 글자 배율 / 확대 배율 (글자 크기·간격을 화면 기준으로 고정), m = 도시·시설 표시 배율. */
+function drawLabels(ctx: CanvasRenderingContext2D, world: WorldMap, layers: Layers, k: number, m: number): void {
   const { mesh } = world;
   ctx.save();
   const placer = new LabelPlacer(ctx, mesh.width, mesh.height, k);
   // 아이콘·도시 표시 자리는 글자가 덮지 않게 비워 둔다 (아이콘은 지도와 함께 커진다).
   if (layers.facilities) {
     for (const f of [...world.ports, ...world.facilities]) {
-      placer.reserve({ x: mesh.x[f.cell] - 7, y: mesh.y[f.cell] - 7, w: 14, h: 14 });
+      placer.reserve({ x: mesh.x[f.cell] - 7 * m, y: mesh.y[f.cell] - 7 * m, w: 14 * m, h: 14 * m });
     }
   }
   if (layers.cities) {
     for (const c of world.cities) {
-      const r = c.capital ? 5 : 3;
+      const r = (c.capital ? 5 : 3) * m;
       placer.reserve({ x: mesh.x[c.cell] - r, y: mesh.y[c.cell] - r, w: 2 * r, h: 2 * r });
     }
   }
@@ -461,7 +478,7 @@ function drawLabels(ctx: CanvasRenderingContext2D, world: WorldMap, layers: Laye
         const x = mesh.x[c.cell], y = mesh.y[c.cell];
         const font = c.capital ? `700 14px ${LABEL_FONT}` : `500 11.5px ${LABEL_FONT}`;
         // 도시 표시(지도와 함께 커짐) 바깥에 글자 간격(화면 크기 고정)만큼 띄운다
-        const r = c.capital ? 4 : 2.6;
+        const r = (c.capital ? 4 : 2.6) * m;
         const gap = r + (c.capital ? 3 : 4.4) * k;
         placer.place(c.name, font, [
           [x + gap, y + 4 * k, "left"], [x - gap, y + 4 * k, "right"], [x, y - r - (c.capital ? 4 : 5.4) * k, "center"], [x, y + r + (c.capital ? 12 : 13.4) * k, "center"],
@@ -474,9 +491,9 @@ function drawLabels(ctx: CanvasRenderingContext2D, world: WorldMap, layers: Laye
         if (!f.name) continue;
         const x = mesh.x[f.cell], y = mesh.y[f.cell];
         // 아이콘 반경 7(지도 단위) + 글자 간격
-        const gx = 7 + 2 * k;
+        const gx = 7 * m + 2 * k;
         placer.place(f.name, `500 11px ${LABEL_FONT}`, [
-          [x + gx, y + 4 * k, "left"], [x - gx, y + 4 * k, "right"], [x, y - 7 - 3 * k, "center"], [x, y + 7 + 12 * k, "center"],
+          [x + gx, y + 4 * k, "left"], [x - gx, y + 4 * k, "right"], [x, y - 7 * m - 3 * k, "center"], [x, y + 7 * m + 12 * k, "center"],
           [x + gx, y - 6 * k, "left"], [x - gx, y - 6 * k, "right"], [x + gx, y + 15 * k, "left"], [x - gx, y + 15 * k, "right"],
         ], "#3a2f25");
       }
