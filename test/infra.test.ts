@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { applyBrush } from "../src/editor.ts";
 import {
-  addFacility, addPath, addPort, cloneInfra, emptyInfra, eraseAt, infraFromJSON, infraToJSON, isEmptyInfra,
-  routePath, visibleInfra, type Infra,
+  addFacility, addPath, addPort, addSeaRoute, cloneInfra, emptyInfra, eraseAt, hitPoint, infraFromJSON, infraToJSON,
+  isEmptyInfra, movePoint, pathMarks, routePath, routeSea, TUNNEL_ELEVATION, visibleInfra, type Infra,
 } from "../src/infra.ts";
 import { forEachNeighbor } from "../src/mesh.ts";
 import {
@@ -50,10 +50,14 @@ describe("경로 계산", () => {
     assert.equal(routePath(world, cityA, ocean, "rail"), null);
   });
 
-  test("철도는 도로보다 급경사를 덜 지난다 (여러 도시 쌍 평균)", () => {
+  test("철도는 도로보다 급경사를 덜 지난다 (터널 구간 제외, 여러 도시 쌍 평균)", () => {
+    const high = (c: number): boolean => elevation[c] > TUNNEL_ELEVATION;
     const maxClimb = (p: number[]): number => {
       let m = 0;
-      for (let k = 1; k < p.length; k++) m = Math.max(m, Math.abs(elevation[p[k]] - elevation[p[k - 1]]));
+      for (let k = 1; k < p.length; k++) {
+        if (high(p[k]) || high(p[k - 1])) continue; // 터널(관통) 구간은 오르막이 아니다
+        m = Math.max(m, Math.abs(elevation[p[k]] - elevation[p[k - 1]]));
+      }
       return m;
     };
     let road = 0, rail = 0, n = 0;
@@ -186,5 +190,153 @@ describe("저장 형식", () => {
     const b = cloneInfra(a);
     b.rails[0].push(3);
     assert.deepEqual(a.rails[0], [1, 2]);
+  });
+});
+
+/** 바다로 이어진 해안 셀 두 개 (서로 충분히 떨어진 것) */
+function twoCoasts(minDist = 150): [number, number] {
+  const coasts = Array.from({ length: mesh.count }, (_, i) => i).filter((i) => land(i) && coastal(i));
+  for (const a of coasts) {
+    for (const b of coasts) {
+      if (Math.hypot(mesh.x[a] - mesh.x[b], mesh.y[a] - mesh.y[b]) < minDist) continue;
+      if (routeSea(world, a, b)) return [a, b];
+    }
+  }
+  throw new Error("바다로 이어진 해안 쌍을 찾지 못함");
+}
+
+describe("해상 항로", () => {
+  const [pa, pb] = twoCoasts();
+
+  test("항로는 두 항구 사이를 바다로만 잇는다", () => {
+    const route = routeSea(world, pa, pb)!;
+    assert.equal(route[0], pa);
+    assert.equal(route[route.length - 1], pb);
+    assert.ok(route.length >= 3);
+    for (let k = 1; k < route.length - 1; k++) assert.ok(elevation[route[k]] <= 0, "중간 셀은 바다");
+    for (let k = 1; k < route.length; k++) assert.ok(adjacent(route[k - 1], route[k]));
+  });
+
+  test("내륙·같은 항구·바다 셀은 항로 끝점이 될 수 없다", () => {
+    assert.equal(routeSea(world, pa, inlandCell), null);
+    assert.equal(routeSea(world, pa, pa), null);
+    assert.equal(routeSea(world, ocean, pb), null);
+    assert.match(addSeaRoute(emptyInfra(), [pa, pb])!, /바다/);
+  });
+
+  test("깊은 바다를 선호해 연안 셀을 덜 지난다", () => {
+    const route = routeSea(world, pa, pb)!;
+    const shallow = route.slice(1, -1).filter((c) => elevation[c] > -0.05).length;
+    assert.ok(shallow <= (route.length - 2) * 0.6, `얕은 셀 ${shallow}/${route.length - 2}`);
+  });
+
+  test("항로 중간이 땅이 되면 그 항로는 숨긴다", () => {
+    const infra = emptyInfra();
+    const route = routeSea(world, pa, pb)!;
+    addSeaRoute(infra, route);
+    assert.equal(visibleInfra(world, infra, []).seaRoutes.length, 1);
+    const mid = route[Math.floor(route.length / 2)];
+    const e = Float64Array.from(elevation);
+    for (let k = 0; k < 80; k++) applyBrush(mesh, e, { tool: "raise", radius: 25, strength: 1 }, mesh.x[mid], mesh.y[mid]);
+    const raised = deriveWorld(OPTS, mesh, e);
+    assert.equal(visibleInfra(raised, infra, []).seaRoutes.length, 0);
+    assert.equal(infra.seaRoutes.length, 1, "데이터는 남긴다");
+  });
+
+  test("지우기로 항로를 지울 수 있다", () => {
+    const infra = emptyInfra();
+    const route = routeSea(world, pa, pb)!;
+    addSeaRoute(infra, route);
+    const mid = route[Math.floor(route.length / 2)];
+    assert.equal(eraseAt(mesh, infra, mesh.x[mid], mesh.y[mid], 8, []), "항로");
+    assert.equal(infra.seaRoutes.length, 0);
+  });
+});
+
+describe("항구·시설물 옮기기", () => {
+  const [pa, pb] = twoCoasts();
+
+  test("시설물을 옮기면 새 자리로 가고, 물·다른 시설 자리로는 못 간다", () => {
+    const infra = emptyInfra();
+    addFacility(world, infra, inlandCell, "castle", "성");
+    addPort(world, infra, coastCell);
+    const target = Array.from({ length: mesh.count }, (_, i) => i).find((i) => land(i) && i !== inlandCell && i !== coastCell)!;
+    assert.equal(movePoint(world, infra, "facility", 0, target), null);
+    assert.equal(infra.facilities[0].cell, target);
+    assert.match(movePoint(world, infra, "facility", 0, ocean)!, /바다/);
+    assert.match(movePoint(world, infra, "facility", 0, coastCell)!, /이미/);
+    assert.match(movePoint(world, infra, "facility", 5, target)!, /찾을 수 없/);
+  });
+
+  test("항구·등대는 해안으로만 옮길 수 있다", () => {
+    const infra = emptyInfra();
+    addPort(world, infra, pa);
+    addFacility(world, infra, pb, "lighthouse");
+    assert.match(movePoint(world, infra, "port", 0, inlandCell)!, /해안/);
+    assert.match(movePoint(world, infra, "facility", 0, inlandCell)!, /해안/);
+  });
+
+  test("항구를 옮기면 이어진 항로를 새 자리로 다시 계산한다", () => {
+    const infra = emptyInfra();
+    addPort(world, infra, pa);
+    addPort(world, infra, pb);
+    addSeaRoute(infra, routeSea(world, pa, pb)!);
+    // pa 근처의 다른 해안 셀 (pb와 바다로 이어지는 곳)
+    const near = Array.from({ length: mesh.count }, (_, i) => i)
+      .filter((i) => land(i) && coastal(i) && i !== pa && i !== pb && routeSea(world, i, pb))
+      .sort((a, b) => Math.hypot(mesh.x[a] - mesh.x[pa], mesh.y[a] - mesh.y[pa]) - Math.hypot(mesh.x[b] - mesh.x[pa], mesh.y[b] - mesh.y[pa]))[0];
+    const result = { droppedRoutes: 0 };
+    assert.equal(movePoint(world, infra, "port", 0, near, result), null);
+    assert.equal(result.droppedRoutes, 0);
+    const route = infra.seaRoutes[0];
+    assert.equal(route[0], near);
+    assert.equal(route[route.length - 1], pb);
+  });
+
+  test("hitPoint는 반경 안의 가장 가까운 항구·시설물을 찾는다", () => {
+    const infra = emptyInfra();
+    addPort(world, infra, coastCell);
+    addFacility(world, infra, inlandCell, "mine");
+    assert.deepEqual(hitPoint(mesh, infra, mesh.x[inlandCell], mesh.y[inlandCell], 5), { kind: "facility", index: 0 });
+    assert.deepEqual(hitPoint(mesh, infra, mesh.x[coastCell], mesh.y[coastCell], 5), { kind: "port", index: 0 });
+    assert.equal(hitPoint(mesh, infra, -100, -100, 5), null);
+  });
+});
+
+describe("다리·터널 표기", () => {
+  test("강을 짧게 건너는 지점은 다리로, 강을 따라 길게 가는 구간은 다리로 보지 않는다", () => {
+    const river = Array.from({ length: mesh.count }, (_, i) => i).find((i) => world.hydro.isRiver[i] && land(i))!;
+    const before = Array.from({ length: mesh.count }, (_, i) => i).find((i) => adjacent(i, river) && land(i) && !world.hydro.isRiver[i])!;
+    const after = Array.from({ length: mesh.count }, (_, i) => i).find((i) => i !== before && adjacent(i, river) && land(i) && !world.hydro.isRiver[i])!;
+    assert.deepEqual(pathMarks(world, [before, river, after], "road").bridges, [1]);
+    // 강 셀로만 이루어진 4칸 경로(강을 따라감): 다리 없음
+    const along = world.rivers.find((r) => r.cells.length >= 6)!.cells.slice(0, 5);
+    assert.deepEqual(pathMarks(world, along, "road").bridges, []);
+  });
+
+  test("철도가 높은 산지를 2칸 이상 지나면 터널로 표기한다 (도로는 표기하지 않음)", () => {
+    const high = Array.from({ length: mesh.count }, (_, i) => i).filter((i) => elevation[i] > TUNNEL_ELEVATION);
+    const a = high.find((i) => high.some((j) => adjacent(i, j)))!;
+    const b = high.find((j) => adjacent(a, j))!;
+    const lowA = Array.from({ length: mesh.count }, (_, i) => i).find((i) => adjacent(i, a) && elevation[i] <= TUNNEL_ELEVATION && land(i));
+    if (lowA === undefined) return; // 이 시드에서 조건에 맞는 산이 없으면 건너뜀
+    const path = [lowA, a, b];
+    assert.deepEqual(pathMarks(world, path, "rail").tunnels, [[1, 2]]);
+    assert.deepEqual(pathMarks(world, path, "road").tunnels, []);
+  });
+});
+
+describe("저장 형식 (항로)", () => {
+  test("항로까지 JSON 저장·불러오기 후 그대로이고, 항로 필드가 없던 예전 형식도 읽는다", () => {
+    const [pa, pb] = twoCoasts();
+    const infra = emptyInfra();
+    addPort(world, infra, pa);
+    addPort(world, infra, pb);
+    addSeaRoute(infra, routeSea(world, pa, pb)!);
+    const back = infraFromJSON(JSON.parse(JSON.stringify(infraToJSON(infra))), mesh.count)!;
+    assert.deepEqual(back.seaRoutes, infra.seaRoutes);
+    const legacy = infraFromJSON({ rails: [], ports: [], facilities: [] }, mesh.count)!;
+    assert.deepEqual(legacy.seaRoutes, []);
+    assert.equal(infraFromJSON({ ...infraToJSON(infra), seaRoutes: [[1]] }, mesh.count), undefined);
   });
 });

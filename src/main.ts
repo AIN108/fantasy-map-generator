@@ -6,8 +6,8 @@ import {
   applyBrush, BRUSH_TOOLS, decodeElevation, EditHistory, encodeElevation, type Brush, type BrushTool,
 } from "./editor.ts";
 import {
-  addFacility, addPath, addPort, cloneInfra, emptyInfra, eraseAt, FACILITY_INFO, infraFromJSON, infraToJSON,
-  isEmptyInfra, routePath, type FacilityKind, type Infra,
+  addFacility, addPath, addPort, addSeaRoute, cloneInfra, emptyInfra, eraseAt, FACILITY_INFO, hitPoint, infraFromJSON,
+  infraToJSON, isEmptyInfra, movePoint, routePath, routeSea, type FacilityKind, type Infra, type PointKind,
 } from "./infra.ts";
 import { findCell, type Mesh } from "./mesh.ts";
 import type { NameStyle } from "./names.ts";
@@ -85,13 +85,15 @@ const copySnapshot = (s: Snapshot): Snapshot => ({
 const editHistory = new EditHistory<Snapshot>(50, copySnapshot);
 
 type EditTarget = "terrain" | "city" | "border" | "infra";
-type InfraTool = "road" | "rail" | "port" | "facility" | "erase";
+type InfraTool = "road" | "rail" | "sea" | "port" | "facility" | "move" | "erase";
 const INFRA_TOOL_HINTS: Record<InfraTool, string> = {
   road: "출발점에서 도착점까지 끌어 놓으면 지형을 따라 도로가 생깁니다. 도시 근처에서 놓으면 도시에 붙습니다.",
   rail: "출발점에서 도착점까지 끌어 놓으면 철도가 생깁니다. 철도는 급경사를 피해 산을 크게 돌아갑니다.",
+  sea: "항구에서 다른 항구까지 끌어 놓으면 바다를 따라 항로가 생깁니다. 얕은 연안보다 깊은 바다를 조금 더 선호합니다.",
   port: "바다에 닿은 해안을 누르면 항구가 생깁니다.",
   facility: "고른 종류의 시설물을 누른 자리에 둡니다. 등대는 해안에만 둘 수 있습니다.",
-  erase: "누른 곳에서 가장 가까운 항구·시설물·도로·철도를 지웁니다.",
+  move: "항구·시설물을 끌어 옮깁니다. 항구를 옮기면 이어진 항로도 새 자리로 다시 계산합니다.",
+  erase: "누른 곳에서 가장 가까운 항구·시설물·도로·철도·항로를 지웁니다.",
 };
 type CityTool = "move" | "add" | "delete" | "rename" | "capital" | "newState";
 const CITY_TOOL_HINTS: Record<CityTool, string> = {
@@ -502,7 +504,22 @@ function drawCursor(x: number, y: number): void {
 function drawInfraCursor(x: number, y: number): void {
   if (!world || !mesh) return;
   const o = octx!;
-  if ((infraTool === "road" || infraTool === "rail") && routeStart >= 0) {
+  if (draggingPoint) {
+    const item = draggingPoint.kind === "port" ? infra.ports[draggingPoint.index] : infra.facilities[draggingPoint.index];
+    if (!item) return;
+    const to = findCell(mesh, x, y);
+    o.setLineDash([4, 4]);
+    o.strokeStyle = "rgba(0,0,0,0.6)";
+    o.lineWidth = 1;
+    o.beginPath();
+    o.moveTo(mesh.x[item.cell], mesh.y[item.cell]);
+    o.lineTo(mesh.x[to], mesh.y[to]);
+    o.stroke();
+    o.setLineDash([]);
+    strokeCircle(mesh.x[to], mesh.y[to], 8);
+    return;
+  }
+  if (isLineTool() && routeStart >= 0) {
     if (routePreview && routePreview.length >= 2) {
       o.beginPath();
       o.moveTo(mesh.x[routePreview[0]], mesh.y[routePreview[0]]);
@@ -511,10 +528,22 @@ function drawInfraCursor(x: number, y: number): void {
       o.strokeStyle = "rgba(255,255,255,0.85)";
       o.stroke();
       o.lineWidth = 2;
-      o.strokeStyle = infraTool === "rail" ? "#2b2b2b" : "rgba(110,70,40,0.95)";
+      o.strokeStyle = infraTool === "rail" ? "#2b2b2b" : infraTool === "sea" ? "rgba(18,38,78,0.95)" : "rgba(110,70,40,0.95)";
       o.stroke();
     }
     strokeCircle(mesh.x[routeStart], mesh.y[routeStart], 5);
+    return;
+  }
+  if (infraTool === "sea") {
+    const port = snapToPort(x, y);
+    if (port >= 0) strokeCircle(mesh.x[port], mesh.y[port], 10);
+    else strokeCircle(x, y, 6, [3, 3]);
+    return;
+  }
+  if (infraTool === "move") {
+    const hit = hitPoint(mesh, infra, x, y, hitRadius());
+    const item = hit && (hit.kind === "port" ? infra.ports[hit.index] : infra.facilities[hit.index]);
+    if (item) strokeCircle(mesh.x[item.cell], mesh.y[item.cell], 10);
     return;
   }
   const city = infraTool === "road" || infraTool === "rail" ? nearestWorldCity(x, y) : -1;
@@ -528,7 +557,12 @@ function queueRoutePreview(x: number, y: number): void {
   requestAnimationFrame(() => {
     if (!routeQueued || routeStart < 0 || !world) return;
     routeQueued = false;
-    routePreview = routePath(world, routeStart, snapToCity(x, y), infraTool === "rail" ? "rail" : "road");
+    if (infraTool === "sea") {
+      const end = snapToPort(x, y);
+      routePreview = end >= 0 ? routeSea(world, routeStart, end) : null;
+    } else {
+      routePreview = routePath(world, routeStart, snapToCity(x, y), infraTool === "rail" ? "rail" : "road");
+    }
     drawCursor(x, y);
   });
 }
@@ -600,6 +634,20 @@ function snapToCity(x: number, y: number): number {
   return visible >= 0 ? world!.cities[visible].cell : findCell(mesh!, x, y);
 }
 
+/** 항로 끝점: 가까운 (보이는) 항구 셀, 없으면 -1 */
+function snapToPort(x: number, y: number): number {
+  if (!world || !mesh) return -1;
+  const r2 = hitRadius() ** 2;
+  let best = -1, bestD = r2;
+  for (const p of world.ports) {
+    const d = (mesh.x[p.cell] - x) ** 2 + (mesh.y[p.cell] - y) ** 2;
+    if (d <= bestD) { bestD = d; best = p.cell; }
+  }
+  return best;
+}
+
+const isLineTool = (): boolean => infraTool === "road" || infraTool === "rail" || infraTool === "sea";
+
 function takeFeatureName(): string | undefined {
   const input = $<HTMLInputElement>("featureName");
   const name = input.value.trim();
@@ -635,6 +683,8 @@ let draggingCity = -1;
 let routeStart = -1;
 let routePreview: number[] | null = null;
 let routeQueued = false;
+/** 이동 도구로 끌고 있는 항구·시설물 */
+let draggingPoint: { kind: PointKind; index: number } | null = null;
 let borderBefore: Snapshot | undefined;
 
 function queuePreview(natureOnly: boolean): void {
@@ -725,6 +775,16 @@ canvas.addEventListener("pointerdown", (e) => {
       routeStart = snapToCity(x, y);
       routePreview = null;
       canvas.setPointerCapture(e.pointerId);
+    } else if (infraTool === "sea") {
+      const start = snapToPort(x, y);
+      if (start < 0) { setStatus("항로는 항구에서 시작합니다. 항구를 눌러 끌어 주세요.", true); return; }
+      routeStart = start;
+      routePreview = null;
+      canvas.setPointerCapture(e.pointerId);
+    } else if (infraTool === "move") {
+      draggingPoint = hitPoint(mesh, infra, x, y, hitRadius());
+      if (!draggingPoint) { setStatus("옮길 항구·시설물을 눌러 끌어 주세요.", true); return; }
+      canvas.setPointerCapture(e.pointerId);
     } else {
       handleInfraClick(x, y);
     }
@@ -765,6 +825,7 @@ canvas.addEventListener("pointermove", (e) => {
     queueRoutePreview(x, y);
     return;
   }
+  if (draggingPoint) return;
   if (painting) {
     if (editTarget === "terrain") paintTerrainTo(x, y);
     else if (editTarget === "border") paintBorderTo(x, y);
@@ -784,6 +845,25 @@ canvas.addEventListener("pointermove", (e) => {
 });
 
 function endPointer(e: PointerEvent): void {
+  if (draggingPoint) {
+    const target = draggingPoint;
+    draggingPoint = null;
+    clearOverlay();
+    if (!world || !mesh) return;
+    const [x, y] = toMapCoords(e);
+    const cell = findCell(mesh, x, y);
+    const item = target.kind === "port" ? infra.ports[target.index] : infra.facilities[target.index];
+    if (!item || item.cell === cell) return;
+    const result = { droppedRoutes: 0 };
+    const ok = applyInfraEdit((inf) => movePoint(world!, inf, target.kind, target.index, cell, result));
+    if (ok) {
+      const what = target.kind === "port" ? "항구를" : "시설물을";
+      setStatus(result.droppedRoutes > 0
+        ? `${what} 옮겼습니다. 새 자리에서 이어지지 않는 항로 ${result.droppedRoutes}개를 지웠습니다.`
+        : `${what} 옮겼습니다.`);
+    }
+    return;
+  }
   if (routeStart >= 0) {
     const start = routeStart;
     routeStart = -1;
@@ -792,6 +872,14 @@ function endPointer(e: PointerEvent): void {
     clearOverlay();
     if (!world || !mesh) return;
     const [x, y] = toMapCoords(e);
+    if (infraTool === "sea") {
+      const end = snapToPort(x, y);
+      if (end < 0) { setStatus("항로는 다른 항구에서 끝나야 합니다. 항구 위에서 놓아 주세요.", true); return; }
+      const sea = routeSea(world, start, end);
+      if (!sea) { setStatus("두 항구를 잇는 바닷길이 없습니다 (같은 항구이거나 바다가 이어지지 않음).", true); return; }
+      applyInfraEdit((inf) => addSeaRoute(inf, sea), "항로를 놓았습니다.");
+      return;
+    }
     const mode = infraTool === "rail" ? "rail" : "road";
     const path = routePath(world, start, snapToCity(x, y), mode);
     if (!path) {
@@ -836,7 +924,7 @@ function endPointer(e: PointerEvent): void {
 canvas.addEventListener("pointerup", endPointer);
 canvas.addEventListener("pointercancel", endPointer);
 canvas.addEventListener("pointerleave", () => {
-  if (!painting && draggingCity < 0 && routeStart < 0) clearOverlay();
+  if (!painting && draggingCity < 0 && routeStart < 0 && !draggingPoint) clearOverlay();
 });
 
 function restore(s: Snapshot): void {

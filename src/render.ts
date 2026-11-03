@@ -1,5 +1,5 @@
 import { BIOME_INFO } from "./climate.ts";
-import { FACILITY_INFO, type FacilityKind } from "./infra.ts";
+import { FACILITY_INFO, pathMarks, type FacilityKind } from "./infra.ts";
 import { forEachNeighbor, type Mesh } from "./mesh.ts";
 import type { WorldMap } from "./world.ts";
 
@@ -10,13 +10,14 @@ export interface Layers {
   stateTint: boolean;
   roads: boolean;
   rails: boolean;
+  seaRoutes: boolean;
   facilities: boolean;
   cities: boolean;
   labels: boolean;
 }
 
 export const DEFAULT_LAYERS: Layers = {
-  relief: true, rivers: true, borders: true, stateTint: false, roads: true, rails: true, facilities: true,
+  relief: true, rivers: true, borders: true, stateTint: false, roads: true, rails: true, seaRoutes: true, facilities: true,
   cities: true, labels: true,
 };
 
@@ -278,6 +279,19 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
     ctx.setLineDash([]);
   }
 
+  // 5-1) 해상 항로: 남색 긴 점선
+  if (layers.seaRoutes && world.seaRoutes.length > 0) {
+    ctx.strokeStyle = "rgba(18,38,78,0.8)";
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([7, 5]);
+    ctx.lineCap = "round";
+    for (const route of world.seaRoutes) {
+      smoothPath(ctx, mesh, route);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+
   // 6) 도로
   if (layers.roads) {
     ctx.strokeStyle = "rgba(110,70,40,0.8)";
@@ -288,21 +302,38 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
       ctx.stroke();
     }
     ctx.setLineDash([]);
+    for (const road of world.roads) {
+      for (const k of pathMarks(world, road, "road").bridges) drawBridge(ctx, mesh, road, k, "rgba(110,70,40,0.95)");
+    }
   }
 
-  // 6-1) 철도: 검은 선 위에 흰 점선 (지도에서 흔히 쓰는 철도 표기)
+  // 6-1) 철도: 검은 선 위에 흰 점선 (지도에서 흔히 쓰는 철도 표기). 고산 구간은 터널(회색 점선 + 입구)
   if (layers.rails && world.rails.length > 0) {
     ctx.lineCap = "butt";
     for (const rail of world.rails) {
-      smoothPath(ctx, mesh, rail);
-      ctx.strokeStyle = "#2b2b2b";
-      ctx.lineWidth = 2.6;
-      ctx.stroke();
-      ctx.strokeStyle = "#f4f1ea";
-      ctx.lineWidth = 1.2;
-      ctx.setLineDash([5, 5]);
-      ctx.stroke();
-      ctx.setLineDash([]);
+      const marks = pathMarks(world, rail, "rail");
+      // 터널 구간을 뺀 나머지를 철도 표기로 그린다 (조각 경계는 한 셀씩 겹쳐 끊김 없이)
+      let from = 0;
+      const pieces: number[][] = [];
+      for (const [a, b] of marks.tunnels) {
+        if (a > from) pieces.push(rail.slice(from, a + 1));
+        from = b;
+      }
+      if (from < rail.length - 1) pieces.push(rail.slice(from));
+      for (const piece of pieces) {
+        if (piece.length < 2) continue;
+        smoothPath(ctx, mesh, piece);
+        ctx.strokeStyle = "#2b2b2b";
+        ctx.lineWidth = 2.6;
+        ctx.stroke();
+        ctx.strokeStyle = "#f4f1ea";
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([5, 5]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      for (const [a, b] of marks.tunnels) drawTunnel(ctx, mesh, rail, a, b);
+      for (const k of marks.bridges) drawBridge(ctx, mesh, rail, k, "#2b2b2b");
     }
   }
 
@@ -408,6 +439,53 @@ export function describeCell(world: WorldMap, i: number): Record<string, string>
   const fac = world.facilities.find((f) => f.cell === i);
   if (fac) info["시설"] = fac.name ? `${FACILITY_INFO[fac.kind].ko} · ${fac.name}` : FACILITY_INFO[fac.kind].ko;
   return info;
+}
+
+/** 경로의 k번째 셀에서의 진행 방향 (라디안) */
+function pathAngle(mesh: Mesh, path: number[], k: number): number {
+  const a = path[Math.max(0, k - 1)], b = path[Math.min(path.length - 1, k + 1)];
+  return Math.atan2(mesh.y[b] - mesh.y[a], mesh.x[b] - mesh.x[a]);
+}
+
+/** 다리: 진행 방향을 따라 놓인 짧은 상판 (양옆 난간 선과 끝이 벌어진 날개) */
+function drawBridge(ctx: CanvasRenderingContext2D, mesh: Mesh, path: number[], k: number, color: string): void {
+  const c = path[k];
+  ctx.save();
+  ctx.translate(mesh.x[c], mesh.y[c]);
+  ctx.rotate(pathAngle(mesh, path, k));
+  ctx.fillStyle = "rgba(244,241,234,0.95)";
+  ctx.fillRect(-5, -2.2, 10, 4.4);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.1;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(-7, -4); ctx.lineTo(-5, -2.2); ctx.lineTo(5, -2.2); ctx.lineTo(7, -4);
+  ctx.moveTo(-7, 4); ctx.lineTo(-5, 2.2); ctx.lineTo(5, 2.2); ctx.lineTo(7, 4);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** 터널: 구간은 회색 점선, 양 끝에는 산을 향해 열린 반원 입구 */
+function drawTunnel(ctx: CanvasRenderingContext2D, mesh: Mesh, path: number[], a: number, b: number): void {
+  const piece = path.slice(a, b + 1);
+  smoothPath(ctx, mesh, piece);
+  ctx.strokeStyle = "rgba(60,60,60,0.75)";
+  ctx.lineWidth = 1.3;
+  ctx.setLineDash([2, 3]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  for (const [k, inward] of [[a, 0], [b, Math.PI]] as const) {
+    const c = path[k];
+    ctx.save();
+    ctx.translate(mesh.x[c], mesh.y[c]);
+    ctx.rotate(pathAngle(mesh, path, k) + inward);
+    ctx.beginPath();
+    ctx.arc(0, 0, 4, -Math.PI / 2, Math.PI / 2);
+    ctx.strokeStyle = "#2b2b2b";
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 /**

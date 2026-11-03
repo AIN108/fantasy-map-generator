@@ -33,27 +33,36 @@ export interface Infra {
   /** undefined면 도로를 자동으로 만든다. 배열이면 이 도로만 쓴다 (처음 도로를 편집할 때 자동 도로를 고정). */
   roads?: number[][];
   rails: number[][];
+  /** 항구와 항구를 바다로 잇는 항로 (첫·마지막 셀은 항구, 사이는 바다) */
+  seaRoutes: number[][];
   ports: PointFeature[];
   facilities: Facility[];
 }
+
+/** 철도 터널로 표기할 고도 (상대값). 이보다 높은 셀이 2칸 이상 이어지면 터널로 본다. */
+export const TUNNEL_ELEVATION = 0.55;
+/** 터널 구간의 거리당 비용 배수: 우회가 이보다 많이 길어질 때만 산을 관통한다 */
+export const TUNNEL_COST = 6;
 
 export const MAX_PATHS = 400;
 export const MAX_POINTS = 400;
 export const MAX_FEATURE_NAME = 20;
 
-export const emptyInfra = (): Infra => ({ rails: [], ports: [], facilities: [] });
+export const emptyInfra = (): Infra => ({ rails: [], seaRoutes: [], ports: [], facilities: [] });
 
 export function cloneInfra(infra: Infra): Infra {
   return {
     roads: infra.roads?.map((p) => [...p]),
     rails: infra.rails.map((p) => [...p]),
+    seaRoutes: infra.seaRoutes.map((p) => [...p]),
     ports: infra.ports.map((p) => ({ ...p })),
     facilities: infra.facilities.map((f) => ({ ...f })),
   };
 }
 
 export const isEmptyInfra = (infra: Infra): boolean =>
-  infra.roads === undefined && infra.rails.length === 0 && infra.ports.length === 0 && infra.facilities.length === 0;
+  infra.roads === undefined && infra.rails.length === 0 && infra.seaRoutes.length === 0
+  && infra.ports.length === 0 && infra.facilities.length === 0;
 
 /** 경로 계산에 필요한 지형 정보 (WorldMap의 일부) */
 export interface Terrain {
@@ -73,7 +82,8 @@ const isCoast = (t: Terrain, i: number): boolean => {
 
 /**
  * 지형을 따라가는 경로(A*). 도로는 자동 도로와 같은 지형 비용을, 철도는 경사에 훨씬 민감한 비용을 쓴다
- * (철도는 급경사를 오르지 못하므로 산을 크게 돌아간다). 바다·호수는 지날 수 없다. 길이 없으면 null.
+ * (철도는 급경사를 오르지 못해 돌아가고, 우회가 너무 길면 고산 구간을 터널로 관통한다).
+ * 바다·호수는 지날 수 없다. 길이 없으면 null.
  */
 export function routePath(t: Terrain, start: number, goal: number, mode: "road" | "rail"): number[] | null {
   if (!onLand(t, start) || !onLand(t, goal)) return null;
@@ -87,7 +97,9 @@ export function routePath(t: Terrain, start: number, goal: number, mode: "road" 
       const crossing = hydro.isRiver[to] && !hydro.isRiver[from] ? RIVER_CROSSING_COST : 0;
       return d * (base + crossing);
     }
-    // 철도: 고도차 비용을 크게, 강은 다리로 건너므로 조금만
+    // 철도: 고산 구간은 경사를 오르지 않고 터널로 관통한다 (비싸지만 평탄한 일정 비용).
+    // 그 밖에서는 고도차 비용을 크게 매겨 급경사를 피하고, 강은 다리로 건너므로 조금만 더한다.
+    if (elevation[to] > TUNNEL_ELEVATION || elevation[from] > TUNNEL_ELEVATION) return d * TUNNEL_COST;
     const climb = Math.abs(elevation[to] - elevation[from]) / Math.max(1e-6, d) * 900;
     const crossing = hydro.isRiver[to] && !hydro.isRiver[from] ? 1.5 : 0;
     return d * (1 + 0.4 * (base - 1) + climb * climb + crossing);
@@ -115,6 +127,143 @@ export function routePath(t: Terrain, start: number, goal: number, mode: "road" 
   const path: number[] = [];
   for (let i = goal; i >= 0; i = prev[i]) path.push(i);
   return path.reverse();
+}
+
+/**
+ * 두 항구를 바다로 잇는 항로(A*). 사이 셀은 모두 바다이며, 얕은 연안보다 깊은 바다를 조금 선호한다.
+ * 출발·도착은 해안 육지(항구 자리) 셀이다. 길이 없으면 null.
+ */
+export function routeSea(t: Terrain, start: number, goal: number): number[] | null {
+  if (start === goal || !onLand(t, start) || !onLand(t, goal)) return null;
+  const { mesh, elevation } = t;
+  const isSea = (i: number): boolean => elevation[i] <= 0;
+  const step = (from: number, to: number): number => {
+    if (to !== goal && !isSea(to)) return Infinity;
+    // 수심 0.15(상대값)보다 얕으면 최대 2.5배까지 비싸게: 해안선을 바짝 붙어 가지 않게
+    const shallow = isSea(to) ? Math.max(0, 1 - -elevation[to] / 0.15) : 0;
+    return distance(mesh, from, to) * (1 + 1.5 * shallow);
+  };
+  const g = new Float64Array(mesh.count).fill(Infinity);
+  const prev = new Int32Array(mesh.count).fill(-1);
+  const heap = new MinHeap();
+  const h = (i: number): number => distance(mesh, i, goal);
+  g[start] = 0;
+  heap.push(h(start), start);
+  while (heap.size > 0) {
+    const [f, i] = heap.pop()!;
+    if (i === goal) break;
+    if (f - h(i) > g[i] + 1e-9) continue;
+    if (i !== start && !isSea(i)) continue;
+    forEachNeighbor(mesh, i, (j) => {
+      const ng = g[i] + step(i, j);
+      if (ng < g[j]) {
+        g[j] = ng;
+        prev[j] = i;
+        heap.push(ng + h(j), j);
+      }
+    });
+  }
+  if (!Number.isFinite(g[goal])) return null;
+  const path: number[] = [];
+  for (let i = goal; i >= 0; i = prev[i]) path.push(i);
+  path.reverse();
+  return path.length >= 3 ? path : null; // 항구 → 바다 → 항구 (바다를 한 칸도 안 지나면 항로가 아님)
+}
+
+export function addSeaRoute(infra: Infra, path: number[]): EditResult {
+  if (path.length < 3) return "항로는 바다를 지나 두 항구를 이어야 합니다.";
+  if (infra.seaRoutes.length >= MAX_PATHS) return `항로는 ${MAX_PATHS}개까지 그릴 수 있습니다.`;
+  infra.seaRoutes.push(path);
+  return null;
+}
+
+export type PointKind = "port" | "facility";
+
+/** (x, y)에서 radius 안의 가장 가까운 항구·시설물. 없으면 null. */
+export function hitPoint(mesh: Mesh, infra: Infra, x: number, y: number, radius: number): { kind: PointKind; index: number } | null {
+  const r2 = radius * radius;
+  let best: { kind: PointKind; index: number; d: number } | null = null;
+  const check = (kind: PointKind, cell: number, index: number): void => {
+    const d = (mesh.x[cell] - x) ** 2 + (mesh.y[cell] - y) ** 2;
+    if (d <= r2 && (!best || d < best.d)) best = { kind, index, d };
+  };
+  infra.ports.forEach((p, i) => check("port", p.cell, i));
+  infra.facilities.forEach((f, i) => check("facility", f.cell, i));
+  if (!best) return null;
+  const { kind, index } = best;
+  return { kind, index };
+}
+
+/**
+ * 항구·시설물을 다른 셀로 옮긴다 (놓을 때와 같은 조건 검사).
+ * 항구를 옮기면 그 항구에서 시작·끝나는 항로를 새 자리로 다시 계산하고, 길이 없으면 그 항로는 지운다.
+ * 성공하면 null, 실패하면 이유. 항로를 지웠다면 droppedRoutes에 개수를 담는다.
+ */
+export function movePoint(
+  t: Terrain, infra: Infra, kind: PointKind, index: number, cell: number, result: { droppedRoutes: number } = { droppedRoutes: 0 },
+): EditResult {
+  const item = kind === "port" ? infra.ports[index] : infra.facilities[index];
+  if (!item) return "시설을 찾을 수 없습니다.";
+  if (item.cell === cell) return null;
+  if (!onLand(t, cell)) return "바다나 호수로는 옮길 수 없습니다.";
+  const coastalOnly = kind === "port" || FACILITY_INFO[(item as Facility).kind]?.coastal;
+  if (coastalOnly && !isCoast(t, cell)) return `${kind === "port" ? "항구" : "등대"}는 해안으로만 옮길 수 있습니다.`;
+  const taken = infra.ports.some((p, i) => p.cell === cell && !(kind === "port" && i === index))
+    || infra.facilities.some((f, i) => f.cell === cell && !(kind === "facility" && i === index));
+  if (taken) return "그 자리에는 이미 시설이 있습니다.";
+
+  const old = item.cell;
+  item.cell = cell;
+  if (kind === "port") {
+    const kept: number[][] = [];
+    for (const route of infra.seaRoutes) {
+      const first = route[0], last = route[route.length - 1];
+      if (first !== old && last !== old) { kept.push(route); continue; }
+      const next = routeSea(t, first === old ? cell : first, last === old ? cell : last);
+      if (next) kept.push(next); else result.droppedRoutes++;
+    }
+    infra.seaRoutes = kept;
+  }
+  return null;
+}
+
+/** 다리·터널 표기 위치 */
+export interface PathMarks {
+  /** 강을 건너는 지점: 경로 안 셀 인덱스 (그 셀 위에 다리를 그린다) */
+  bridges: number[];
+  /** 철도가 높은 산지를 지나는 구간: [시작, 끝] 경로 인덱스 (양 끝 포함) */
+  tunnels: [number, number][];
+}
+
+
+/**
+ * 경로에서 다리(강 건너기)와 터널(철도의 고산 구간)을 찾는다.
+ * 강을 따라 길게 나란히 가는 구간(강 셀이 3칸 이상 연속)은 다리로 보지 않는다.
+ */
+export function pathMarks(t: Terrain, path: number[], mode: "road" | "rail"): PathMarks {
+  const bridges: number[] = [];
+  const tunnels: [number, number][] = [];
+  let k = 0;
+  while (k < path.length) {
+    if (t.hydro.isRiver[path[k]]) {
+      let end = k;
+      while (end + 1 < path.length && t.hydro.isRiver[path[end + 1]]) end++;
+      if (end - k + 1 <= 2 && k > 0 && end < path.length - 1) bridges.push(Math.floor((k + end) / 2));
+      k = end + 1;
+    } else k++;
+  }
+  if (mode === "rail") {
+    k = 0;
+    while (k < path.length) {
+      if (t.elevation[path[k]] > TUNNEL_ELEVATION) {
+        let end = k;
+        while (end + 1 < path.length && t.elevation[path[end + 1]] > TUNNEL_ELEVATION) end++;
+        if (end > k) tunnels.push([k, end]);
+        k = end + 1;
+      } else k++;
+    }
+  }
+  return { bridges, tunnels };
 }
 
 const cleanName = (name: string | undefined): string | undefined => {
@@ -167,7 +316,7 @@ function segDist2(px: number, py: number, ax: number, ay: number, bx: number, by
 }
 
 /**
- * (x, y)에서 radius 안의 가장 가까운 시설을 지운다. 점(항구·시설물)이 선(도로·철도)보다 우선.
+ * (x, y)에서 radius 안의 가장 가까운 시설을 지운다. 점(항구·시설물)이 선(도로·철도·항로)보다 우선.
  * 자동 도로를 지우면 그 전에 autoRoads를 고정한다. 지운 것의 설명을, 없으면 null을 돌려준다.
  */
 export function eraseAt(mesh: Mesh, infra: Infra, x: number, y: number, radius: number, autoRoads: number[][]): string | null {
@@ -200,7 +349,7 @@ export function eraseAt(mesh: Mesh, infra: Infra, x: number, y: number, radius: 
     }
     return d;
   };
-  let line: { kind: "road" | "rail"; index: number; d: number } | undefined;
+  let line: { kind: "road" | "rail" | "sea"; index: number; d: number } | undefined;
   (infra.roads ?? autoRoads).forEach((p, index) => {
     const d = pathD(p);
     if (d <= r2 && (!line || d < line.d)) line = { kind: "road", index, d };
@@ -209,10 +358,18 @@ export function eraseAt(mesh: Mesh, infra: Infra, x: number, y: number, radius: 
     const d = pathD(p);
     if (d <= r2 && (!line || d < line.d)) line = { kind: "rail", index, d };
   });
+  infra.seaRoutes.forEach((p, index) => {
+    const d = pathD(p);
+    if (d <= r2 && (!line || d < line.d)) line = { kind: "sea", index, d };
+  });
   if (!line) return null;
   if (line.kind === "rail") {
     infra.rails.splice(line.index, 1);
     return "철도";
+  }
+  if (line.kind === "sea") {
+    infra.seaRoutes.splice(line.index, 1);
+    return "항로";
   }
   infra.roads ??= autoRoads.map((p) => [...p]);
   infra.roads.splice(line.index, 1);
@@ -224,7 +381,7 @@ export function eraseAt(mesh: Mesh, infra: Infra, x: number, y: number, radius: 
  * roads가 undefined면 autoRoads를 그대로 쓴다.
  */
 export function visibleInfra(t: Terrain, infra: Infra, autoRoads: number[][]): {
-  roads: number[][]; rails: number[][]; ports: PointFeature[]; facilities: Facility[];
+  roads: number[][]; rails: number[][]; seaRoutes: number[][]; ports: PointFeature[]; facilities: Facility[];
 } {
   const split = (paths: number[][]): number[][] => paths.flatMap((p) => {
     const out: number[][] = [];
@@ -239,6 +396,8 @@ export function visibleInfra(t: Terrain, infra: Infra, autoRoads: number[][]): {
   return {
     roads: infra.roads ? split(infra.roads) : autoRoads,
     rails: split(infra.rails),
+    // 항로는 지형 편집으로 중간 바다가 땅이 되면 통째로 숨긴다 (끊긴 항로는 의미가 없다)
+    seaRoutes: infra.seaRoutes.filter((r) => r.slice(1, -1).every((c) => t.elevation[c] <= 0)),
     ports: infra.ports.filter((p) => onLand(t, p.cell)),
     facilities: infra.facilities.filter((f) => onLand(t, f.cell)),
   };
@@ -270,7 +429,8 @@ export function infraFromJSON(data: unknown, cellCount: number): Infra | undefin
   const roads = o.roads === undefined ? undefined : paths(o.roads);
   if (o.roads !== undefined && !roads) return undefined;
   const rails = paths(o.rails ?? []);
-  if (!rails || !Array.isArray(o.ports ?? []) || !Array.isArray(o.facilities ?? [])) return undefined;
+  const seaRoutes = paths(o.seaRoutes ?? []);
+  if (!rails || !seaRoutes || !Array.isArray(o.ports ?? []) || !Array.isArray(o.facilities ?? [])) return undefined;
   const portsRaw = (o.ports ?? []) as unknown[];
   const facRaw = (o.facilities ?? []) as unknown[];
   if (portsRaw.length > MAX_POINTS || facRaw.length > MAX_POINTS) return undefined;
@@ -289,5 +449,5 @@ export function infraFromJSON(data: unknown, cellCount: number): Infra | undefin
     if (!f || !cell(f.cell) || n === false || typeof f.kind !== "string" || !(f.kind in FACILITY_INFO)) return undefined;
     facilities.push({ cell: f.cell, kind: f.kind as FacilityKind, name: n });
   }
-  return { roads, rails, ports, facilities };
+  return { roads, rails, seaRoutes, ports, facilities };
 }

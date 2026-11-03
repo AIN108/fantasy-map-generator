@@ -69,6 +69,7 @@ export interface WorldMap {
   roads: number[][];
   /** 사용자가 그린 철도와 놓은 항구·시설물 (applyInfra로 채운다) */
   rails: number[][];
+  seaRoutes: number[][];
   ports: PointFeature[];
   facilities: Facility[];
   peaks: Peak[];
@@ -147,7 +148,7 @@ export function deriveWorld(
     return {
       options, mesh, elevation, temperature, moisture, biome, hydro, rivers,
       owner: new Int32Array(mesh.count).fill(-1), states: [], cities: [], roads: [], peaks: [],
-      rails: [], ports: [], facilities: [],
+      rails: [], seaRoutes: [], ports: [], facilities: [],
     };
   }
 
@@ -225,7 +226,7 @@ export function deriveWorld(
 
   return {
     options, mesh, elevation, temperature, moisture, biome, hydro, rivers, owner, states, cities, roads, peaks,
-    rails: [], ports: [], facilities: [],
+    rails: [], seaRoutes: [], ports: [], facilities: [],
   };
 }
 
@@ -292,7 +293,7 @@ function deriveEditedCiv(
 
   return {
     options, mesh, elevation, temperature: rest.temperature, moisture: rest.moisture, biome, hydro,
-    rivers: rest.rivers, owner, states, cities, roads, peaks, rails: [], ports: [], facilities: [],
+    rivers: rest.rivers, owner, states, cities, roads, peaks, rails: [], seaRoutes: [], ports: [], facilities: [],
   };
 }
 
@@ -464,6 +465,7 @@ export function toJSON(world: WorldMap, civ?: CivState, infra?: Infra): object {
     // 그린 철도·항구·시설물(과 고정한 도로)
     ...(infra && !isEmptyInfra(infra) ? { infra: infraToJSON(infra) } : {}),
     rails: world.rails,
+    seaRoutes: world.seaRoutes,
     ports: world.ports,
     facilities: world.facilities,
   };
@@ -475,7 +477,7 @@ export function toJSON(world: WorldMap, civ?: CivState, infra?: Infra): object {
  */
 export function applyInfra(world: WorldMap, infra: Infra): WorldMap {
   const v = visibleInfra(world, infra, world.roads);
-  return { ...world, roads: v.roads, rails: v.rails, ports: v.ports, facilities: v.facilities };
+  return { ...world, roads: v.roads, rails: v.rails, seaRoutes: v.seaRoutes, ports: v.ports, facilities: v.facilities };
 }
 
 /**
