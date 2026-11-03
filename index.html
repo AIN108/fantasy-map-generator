@@ -69,6 +69,31 @@
           <button type="submit" class="primary">지도 생성</button>
         </form>
 
+        <fieldset class="editor" id="editor">
+          <legend>지형 편집</legend>
+          <label class="toggle"><input type="checkbox" id="editMode" /> 편집 모드 <kbd>E</kbd></label>
+          <div class="tools" role="radiogroup" aria-label="브러시 도구">
+            <label><input type="radio" name="tool" value="raise" checked /> 융기</label>
+            <label><input type="radio" name="tool" value="lower" /> 침강</label>
+            <label><input type="radio" name="tool" value="flatten" /> 평탄화</label>
+            <label><input type="radio" name="tool" value="smooth" /> 부드럽게</label>
+          </div>
+          <p class="hint" id="toolHint"></p>
+          <label class="field">
+            <span>브러시 크기 <output id="brushSizeOut"></output></span>
+            <input id="brushSize" type="range" min="10" max="160" step="5" value="45" />
+          </label>
+          <label class="field">
+            <span>세기 <output id="brushStrengthOut"></output></span>
+            <input id="brushStrength" type="range" min="0.1" max="1" step="0.05" value="0.5" />
+          </label>
+          <div class="row">
+            <button type="button" id="undo" title="되돌리기 (Ctrl+Z)">되돌리기</button>
+            <button type="button" id="redo" title="다시 하기 (Ctrl+Shift+Z)">다시 하기</button>
+            <button type="button" id="resetEdits" title="시드 지형으로 되돌리기">편집 초기화</button>
+          </div>
+        </fieldset>
+
         <fieldset class="layers">
           <legend>레이어</legend>
           <label><input type="checkbox" data-layer="relief" /> 고도 음영</label>
@@ -84,6 +109,8 @@
           <button type="button" id="exportPng">PNG 저장</button>
           <button type="button" id="exportJson">JSON 저장</button>
           <button type="button" id="copyLink">링크 복사</button>
+          <button type="button" id="importJson">JSON 불러오기</button>
+          <input type="file" id="importFile" accept="application/json,.json" hidden />
         </div>
 
         <section class="info" aria-live="polite">
@@ -94,7 +121,10 @@
       </aside>
 
       <main class="stage">
-        <canvas id="map" width="1200" height="800" aria-label="생성된 판타지 지도"></canvas>
+        <div class="map-wrap">
+          <canvas id="map" width="1200" height="800" aria-label="생성된 판타지 지도"></canvas>
+          <canvas id="overlay" width="1200" height="800" aria-hidden="true"></canvas>
+        </div>
         <section class="legend" id="legend" aria-label="국가 목록"></section>
       </main>
     </div>

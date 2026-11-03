@@ -79,15 +79,41 @@ export function validateOptions(o: WorldOptions): void {
   if (!(o.temperatureShift >= -0.4 && o.temperatureShift <= 0.4)) fail("기온 보정은 -0.4~0.4여야 합니다.");
 }
 
+/** 메시를 결정하는 옵션. 이 값이 같으면 메시를 재사용할 수 있다. */
+export const meshKey = (o: WorldOptions): string => JSON.stringify([o.seed, o.width, o.height, o.cells]);
+/** 시드 지형을 결정하는 옵션. 이 값이 바뀌면 편집한 고도를 유지할 수 없다. */
+export const terrainKey = (o: WorldOptions): string => JSON.stringify([o.seed, o.width, o.height, o.cells, o.landRatio, o.shape]);
+
+export function createMesh(options: WorldOptions): Mesh {
+  return buildMesh(subRng(options.seed, "mesh"), options.width, options.height, options.cells);
+}
+
+export function createElevation(mesh: Mesh, options: WorldOptions): Float64Array {
+  return generateElevation(mesh, subRng(options.seed, "terrain"), options);
+}
+
 /** 시드와 옵션으로 지도 전체를 만든다. 같은 입력이면 항상 같은 결과. */
 export function generateWorld(input: Partial<WorldOptions> = {}): WorldMap {
   const options: WorldOptions = { ...DEFAULT_OPTIONS, ...input };
   validateOptions(options);
+  const mesh = createMesh(options);
+  return deriveWorld(options, mesh, createElevation(mesh, options));
+}
+
+/**
+ * 주어진 메시·고도(시드 지형이든 사용자가 편집한 지형이든)에서 기후·수계·생태·문명을 계산한다.
+ * natureOnly면 문명(도시·국가·도로·지명)을 건너뛴다. 브러시로 칠하는 동안의 빠른 미리보기용.
+ */
+export function deriveWorld(
+  options: WorldOptions, mesh: Mesh, elevation: Float64Array, natureOnly = false,
+): WorldMap {
+  validateOptions(options);
+  if (elevation.length !== mesh.count) {
+    throw new RangeError(`고도 배열 길이(${elevation.length})가 셀 수(${mesh.count})와 다릅니다.`);
+  }
   const { seed } = options;
 
   // 단계마다 별도 난수열을 써서, 예를 들어 지명 스타일만 바꿔도 지형은 그대로 유지되게 한다.
-  const mesh = buildMesh(subRng(seed, "mesh"), options.width, options.height, options.cells);
-  const elevation = generateElevation(mesh, subRng(seed, "terrain"), options);
   const temperature = computeTemperature(mesh, elevation, subRng(seed, "temperature"), options.temperatureShift);
   const moisture = computeMoisture(mesh, elevation, subRng(seed, "moisture"));
 
@@ -107,6 +133,13 @@ export function generateWorld(input: Partial<WorldOptions> = {}): WorldMap {
     cells,
     flux: hydro.flux[cells[cells.length - 2] ?? cells[0]],
   }));
+
+  if (natureOnly) {
+    return {
+      options, mesh, elevation, temperature, moisture, biome, hydro, rivers,
+      owner: new Int32Array(mesh.count).fill(-1), states: [], cities: [], roads: [], peaks: [],
+    };
+  }
 
   // ── 문명 ──
   const civRng = subRng(seed, "civ");
@@ -185,4 +218,40 @@ export function toJSON(world: WorldMap): object {
     roads: world.roads,
     peaks: world.peaks,
   };
+}
+
+/**
+ * toJSON으로 저장한 지도를 다시 읽어 옵션과 (편집된) 고도를 돌려준다.
+ * 외부 파일이므로 형식·범위를 검증하고, 메시를 다시 만들어 셀 수가 맞는지 확인한다.
+ */
+export function parseMapJSON(data: unknown): { options: WorldOptions; elevation: Float64Array; mesh: Mesh } {
+  const fail = (msg: string): never => { throw new Error(`지도 파일을 읽을 수 없습니다: ${msg}`); };
+  if (typeof data !== "object" || data === null) fail("JSON 객체가 아닙니다.");
+  const obj = data as Record<string, unknown>;
+  if (obj.format !== "fantasy-map/v1") fail(`지원하지 않는 형식입니다 (${String(obj.format)}).`);
+  if (typeof obj.options !== "object" || obj.options === null) fail("options가 없습니다.");
+  if (!Array.isArray(obj.cells)) fail("cells가 없습니다.");
+
+  const raw = obj.options as Record<string, unknown>;
+  const options: WorldOptions = { ...DEFAULT_OPTIONS };
+  if (typeof raw.seed === "string") options.seed = raw.seed.slice(0, 40);
+  for (const key of ["width", "height", "cells", "landRatio", "states", "citiesPerState", "temperatureShift"] as const) {
+    const v = raw[key];
+    if (typeof v === "number" && Number.isFinite(v)) options[key] = v;
+  }
+  if (raw.shape === "continent" || raw.shape === "archipelago") options.shape = raw.shape;
+  if (raw.nameStyle === "korean" || raw.nameStyle === "western") options.nameStyle = raw.nameStyle;
+  validateOptions(options);
+
+  const mesh = createMesh(options);
+  const cells = obj.cells as unknown[];
+  if (cells.length !== mesh.count) fail(`셀 수가 맞지 않습니다 (파일 ${cells.length}, 재생성 ${mesh.count}).`);
+  const elevation = new Float64Array(mesh.count);
+  cells.forEach((c, i) => {
+    const e = (c as Record<string, unknown> | null)?.elevation;
+    if (typeof e !== "number" || !Number.isFinite(e)) fail(`${i}번 셀의 고도 값이 올바르지 않습니다.`);
+    elevation[i] = Math.max(-1, Math.min(1, e as number));
+    if (mesh.isEdge[i]) elevation[i] = Math.min(elevation[i], -0.05);
+  });
+  return { options, elevation, mesh };
 }
