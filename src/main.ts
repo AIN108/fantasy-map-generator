@@ -4,9 +4,10 @@ import {
 import { findCell, type Mesh } from "./mesh.ts";
 import { buildRenderCache, DEFAULT_LAYERS, describeCell, renderWorld, type Layers, type RenderCache } from "./render.ts";
 import {
-  createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, meshKey, parseMapJSON, terrainKey, toJSON,
-  type WorldMap, type WorldOptions,
+  createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors, parseMapJSON,
+  sanitizeAnchors, terrainKey, toJSON, type NameAnchors, type WorldMap, type WorldOptions,
 } from "./world.ts";
+import type { NameStyle } from "./names.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -48,6 +49,11 @@ let baseElevation: Float64Array | undefined;
 /** 현재 지형 (편집이 반영된 값) */
 let elevation: Float64Array | undefined;
 let edited = false;
+/**
+ * 지명 스타일별 이름 기억. 다시 계산할 때 같은 자리의 국가·도시·강·봉우리가 이 이름을 물려받는다.
+ * 지형 자체가 바뀌면(시드 변경·편집 초기화) 비운다.
+ */
+let nameMemory: Partial<Record<NameStyle, NameAnchors>> = {};
 let world: WorldMap | undefined;
 let cache: RenderCache | undefined;
 let layers: Layers = { ...DEFAULT_LAYERS };
@@ -145,7 +151,9 @@ function derive(natureOnly = false): void {
   if (!mesh || !elevation) return;
   try {
     const t0 = performance.now();
-    world = deriveWorld(options, mesh, elevation, natureOnly);
+    const prior = nameMemory[options.nameStyle];
+    world = deriveWorld(options, mesh, elevation, natureOnly, prior);
+    if (!natureOnly) nameMemory[options.nameStyle] = mergeAnchors(extractAnchors(world), prior);
     cache = buildRenderCache(world);
     if (canvas.width !== options.width || canvas.height !== options.height) {
       canvas.width = overlay.width = options.width;
@@ -166,7 +174,9 @@ function derive(natureOnly = false): void {
  * 폼 옵션으로 지도를 만든다. 지형을 결정하는 옵션(시드·크기·셀 수·육지 비율·지형)이 그대로면
  * 편집한 지형을 유지하고 기후·문명만 다시 계산한다.
  */
-function generate(next: WorldOptions, opts: { restoreFrom?: Float64Array } = {}): void {
+function generate(
+  next: WorldOptions, opts: { restoreFrom?: Float64Array; names?: Partial<Record<NameStyle, NameAnchors>> } = {},
+): void {
   try {
     const nextTerrainKey = terrainKey(next);
     if (edited && nextTerrainKey !== currentTerrainKey && !opts.restoreFrom) {
@@ -187,6 +197,8 @@ function generate(next: WorldOptions, opts: { restoreFrom?: Float64Array } = {})
       edited = !!opts.restoreFrom && differs(elevation, baseElevation);
       currentTerrainKey = nextTerrainKey;
       editHistory.clear();
+      // 새 지형이면 이전 이름 기억은 의미가 없다. 저장본·파일에서 되살리는 경우에만 이름을 넘겨받는다.
+      nameMemory = opts.names ?? {};
     }
     derive();
     saveEdits();
@@ -202,7 +214,9 @@ const differs = (a: Float64Array, b: Float64Array): boolean => a.some((v, i) => 
 function saveEdits(): void {
   try {
     if (edited && elevation) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ terrainKey: currentTerrainKey, data: encodeElevation(elevation) }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        terrainKey: currentTerrainKey, data: encodeElevation(elevation), names: nameMemory,
+      }));
     } else {
       localStorage.removeItem(STORAGE_KEY);
     }
@@ -211,14 +225,20 @@ function saveEdits(): void {
   }
 }
 
-function loadSavedEdits(o: WorldOptions): Float64Array | undefined {
+function loadSavedEdits(o: WorldOptions): { elevation: Float64Array; names: Partial<Record<NameStyle, NameAnchors>> } | undefined {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return undefined;
-    const saved = JSON.parse(raw) as { terrainKey?: unknown; data?: unknown };
+    const saved = JSON.parse(raw) as { terrainKey?: unknown; data?: unknown; names?: Record<string, unknown> };
     if (saved.terrainKey !== terrainKey(o) || typeof saved.data !== "string") return undefined;
-    const m = createMesh(o);
-    return decodeElevation(saved.data, m.count);
+    const elevation = decodeElevation(saved.data, createMesh(o).count);
+    if (!elevation) return undefined;
+    const names: Partial<Record<NameStyle, NameAnchors>> = {};
+    for (const style of ["korean", "western"] as const) {
+      const a = sanitizeAnchors(saved.names?.[style]);
+      if (a && a.nameStyle === style) names[style] = a;
+    }
+    return { elevation, names };
   } catch {
     return undefined;
   }
@@ -380,7 +400,10 @@ async function importFile(file: File): Promise<void> {
   currentMeshKey = meshKey(parsed.options);
   currentTerrainKey = ""; // 강제로 새 지형으로 취급
   edited = false;
-  generate(parsed.options, { restoreFrom: parsed.elevation });
+  generate(parsed.options, {
+    restoreFrom: parsed.elevation,
+    names: parsed.anchors ? { [parsed.anchors.nameStyle]: parsed.anchors } : {},
+  });
   setStatus(`${file.name}을(를) 불러왔습니다.${edited ? " (편집된 지형 포함)" : ""}`);
 }
 
@@ -491,6 +514,6 @@ Promise.race([
   new Promise((r) => setTimeout(r, 2500)),
 ]).catch(() => undefined).finally(() => {
   const saved = loadSavedEdits(initial);
-  generate(initial, saved ? { restoreFrom: saved } : {});
+  generate(initial, saved ? { restoreFrom: saved.elevation, names: saved.names } : {});
   if (saved && edited) setStatus("이 브라우저에 저장된 편집 지형을 불러왔습니다. 시드 지형으로 돌아가려면 '편집 초기화'를 누르세요.");
 });

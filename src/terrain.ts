@@ -68,7 +68,8 @@ export function generateElevation(mesh: Mesh, rng: Rng, opts: TerrainOptions): F
   for (let i = 0; i < count; i++) {
     const h = raw[i] - seaLevel;
     // 육지는 제곱근 대신 1.3승으로 눌러 저지대를 넓히고 고산은 드물게
-    elevation[i] = h > 0 ? Math.pow(h / maxH, 1.3) : -Math.pow(h / minH, 0.8);
+    // + 0: 해수면과 정확히 같은 셀이 -0이 되지 않게 한다 (JSON 저장 시 0으로 바뀌어 값이 달라 보임)
+    elevation[i] = (h > 0 ? Math.pow(h / maxH, 1.3) : -Math.pow(h / minH, 0.8)) + 0;
     if (mesh.isEdge[i]) elevation[i] = Math.min(elevation[i], -0.05);
   }
   return elevation;

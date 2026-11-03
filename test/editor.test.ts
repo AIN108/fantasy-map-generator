@@ -109,11 +109,10 @@ describe("되돌리기", () => {
 });
 
 describe("저장 형식", () => {
-  test("16비트 인코딩은 오차 1e-4 안에서 복원되고, 길이가 다르면 거부한다", () => {
+  test("브라우저 저장 인코딩은 손실 없이 복원되고, 길이가 다르면 거부한다", () => {
     const text = encodeElevation(base);
     const back = decodeElevation(text, base.length)!;
-    assert.equal(back.length, base.length);
-    for (let i = 0; i < base.length; i++) assert.ok(Math.abs(back[i] - base[i]) < 1e-4);
+    assert.deepEqual(back, base);
     assert.equal(decodeElevation(text, base.length + 1), undefined);
     assert.equal(decodeElevation("@@not-base64@@", base.length), undefined);
   });
@@ -124,7 +123,7 @@ describe("저장 형식", () => {
     const json = JSON.parse(JSON.stringify(toJSON(deriveWorld(OPTS, mesh, e))));
     const parsed = parseMapJSON(json);
     assert.equal(parsed.options.seed, OPTS.seed);
-    for (let i = 0; i < mesh.count; i++) assert.ok(Math.abs(parsed.elevation[i] - e[i]) < 1e-3);
+    assert.deepEqual(parsed.elevation, e);
   });
 
   test("형식이 틀린 파일은 이유와 함께 거부한다", () => {

@@ -37,9 +37,12 @@ export function isCoastal(mesh: Mesh, elevation: Float64Array, i: number): boole
   return coastal;
 }
 
-/** 셀별 정착 적합도 점수 */
+/**
+ * 셀별 정착 적합도 점수. jitter는 셀 번호로 정해지는 난수여야 한다:
+ * 순서대로 소비하는 RNG를 쓰면 한 셀의 육지/바다가 바뀔 때 뒤쪽 셀 값이 전부 밀려 먼 도시까지 움직인다.
+ */
 export function settlementScore(
-  mesh: Mesh, elevation: Float64Array, biome: Biome[], hydro: Hydrology, rng: Rng,
+  mesh: Mesh, elevation: Float64Array, biome: Biome[], hydro: Hydrology, jitter: (cell: number) => number,
 ): Float64Array {
   const score = new Float64Array(mesh.count);
   let maxFlux = 1e-9;
@@ -55,7 +58,7 @@ export function settlementScore(
     forEachNeighbor(mesh, i, (j) => { if (hydro.isLake[j]) nearLake = true; });
     if (nearLake) s *= 1.3;
     s *= 1 - 0.6 * elevation[i];
-    score[i] = s * (0.85 + 0.3 * rng());
+    score[i] = s * (0.85 + 0.3 * jitter(i));
   }
   return score;
 }
@@ -150,7 +153,8 @@ export function findPath(
  * 후보마다 A*로 실제 경로를 만든다. 바다로 막힌 간선은 버린다.
  */
 export function buildRoads(
-  mesh: Mesh, biome: Biome[], hydro: Hydrology, cities: City[], rng: Rng, maxEdgeLength: number,
+  mesh: Mesh, biome: Biome[], hydro: Hydrology, cities: City[], pairJitter: (cellA: number, cellB: number) => number,
+  maxEdgeLength: number,
 ): number[][] {
   if (cities.length < 2) return [];
   const pts = cities.flatMap((c) => [mesh.x[c.cell], mesh.y[c.cell]]);
@@ -177,7 +181,7 @@ export function buildRoads(
   for (const [a, b, len] of edges) {
     const ra = find(a), rb = find(b);
     if (ra !== rb) { parent[ra] = rb; chosen.push([a, b]); }
-    else if (len < maxEdgeLength * 0.5 && rng() < 0.25) chosen.push([a, b]);
+    else if (len < maxEdgeLength * 0.5 && pairJitter(cities[a].cell, cities[b].cell) < 0.25) chosen.push([a, b]);
   }
 
   const roadCells = new Uint8Array(mesh.count);

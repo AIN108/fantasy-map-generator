@@ -107,17 +107,19 @@ export class EditHistory {
   get canRedo(): boolean { return this.redoStack.length > 0; }
 }
 
-/** 고도를 16비트로 양자화해 base64 문자열로 만든다 (브라우저 저장용, 9,000셀 ≈ 24KB). */
+/**
+ * 고도 배열을 base64 문자열로 만든다 (브라우저 저장용). 손실 없이 Float64 그대로 저장한다:
+ * 양자화하면 미세한 차이로 강 경로·도시 배치가 달라져 새로고침 후 다른 지도가 될 수 있다.
+ * 9,000셀 기준 약 96KB.
+ */
 export function encodeElevation(elevation: Float64Array): string {
-  const q = new Int16Array(elevation.length);
-  for (let i = 0; i < elevation.length; i++) q[i] = Math.round(Math.max(-1, Math.min(1, elevation[i])) * 32767);
-  const bytes = new Uint8Array(q.buffer);
+  const bytes = new Uint8Array(Float64Array.from(elevation).buffer);
   let bin = "";
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return btoa(bin);
 }
 
-/** encodeElevation의 역변환. 길이가 기대값과 다르면 undefined. */
+/** encodeElevation의 역변환. 길이가 기대값과 다르거나 값이 유한수가 아니면 undefined. */
 export function decodeElevation(text: string, expectedLength: number): Float64Array | undefined {
   let bin: string;
   try {
@@ -125,9 +127,10 @@ export function decodeElevation(text: string, expectedLength: number): Float64Ar
   } catch {
     return undefined;
   }
-  if (bin.length !== expectedLength * 2) return undefined;
+  if (bin.length !== expectedLength * 8) return undefined;
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const q = new Int16Array(bytes.buffer);
-  return Float64Array.from(q, (v) => v / 32767);
+  const values = new Float64Array(bytes.buffer);
+  if (!values.every(Number.isFinite)) return undefined;
+  return values.map((v) => Math.max(-1, Math.min(1, v)));
 }

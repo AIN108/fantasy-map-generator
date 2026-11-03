@@ -104,3 +104,19 @@ export function fbm(
   }
   return sum / norm;
 }
+
+/**
+ * 셀 번호만으로 정해지는 [0, 1) 난수. 순서대로 꺼내 쓰는 RNG와 달리, 일부 셀이 바뀌어도
+ * 다른 셀의 값이 밀리지 않는다 (지형 편집 후 먼 곳의 도시가 움직이지 않게 하는 용도).
+ */
+export function cellHash(seed: string, stage: string): (i: number) => number {
+  const base = createRng(`${seed}::${stage}`)();
+  const salt = Math.floor(base * 4294967296) >>> 0;
+  return (i: number): number => {
+    // splitmix32
+    let z = (salt + Math.imul(i + 1, 0x9e3779b9)) >>> 0;
+    z = Math.imul(z ^ (z >>> 16), 0x85ebca6b);
+    z = Math.imul(z ^ (z >>> 13), 0xc2b2ae35);
+    return ((z ^ (z >>> 16)) >>> 0) / 4294967296;
+  };
+}

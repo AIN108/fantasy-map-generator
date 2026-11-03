@@ -129,6 +129,11 @@ export class NameGenerator {
     this.style = style;
   }
 
+  /** 이미 쓰인 이름(이전 지도에서 물려받은 이름 등)을 등록해 새 이름과 겹치지 않게 한다. */
+  reserve(name: string): void {
+    this.used.add(name);
+  }
+
   next(kind: FeatureKind, ctx: NameContext = {}): string {
     for (let attempt = 0; attempt < 100; attempt++) {
       const name = this.style === "korean" ? koreanName(this.rng, kind, ctx) : westernName(this.rng, kind);
