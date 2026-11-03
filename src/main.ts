@@ -1,6 +1,6 @@
 import {
-  addCity, civFromJSON, civToJSON, cloneCiv, deleteCity, ensureCivNames, makeCapital, moveCity,
-  paintTerritory, renameCity, renameState, snapshotCiv, type CivState, type EditResult,
+  addCity, civFromJSON, civToJSON, cloneCiv, createState, deleteCity, deleteState, ensureCivNames, makeCapital,
+  moveCity, paintTerritory, renameCity, renameState, snapshotCiv, type CivState, type EditResult,
 } from "./civedit.ts";
 import {
   applyBrush, BRUSH_TOOLS, decodeElevation, EditHistory, encodeElevation, type Brush, type BrushTool,
@@ -31,6 +31,7 @@ const legendEl = $("legend");
 const editorEl = $("editor");
 const mapWrap = canvas.parentElement!;
 const paintStateEl = $<HTMLSelectElement>("paintState");
+const mergeIntoEl = $<HTMLSelectElement>("mergeInto");
 
 const RANGE_FIELDS = ["landRatio", "states", "citiesPerState", "temperatureShift", "cells"] as const;
 type RangeField = (typeof RANGE_FIELDS)[number];
@@ -75,13 +76,14 @@ const editHistory = new EditHistory<Snapshot>(50, (s) => ({
 }));
 
 type EditTarget = "terrain" | "city" | "border";
-type CityTool = "move" | "add" | "delete" | "rename" | "capital";
+type CityTool = "move" | "add" | "delete" | "rename" | "capital" | "newState";
 const CITY_TOOL_HINTS: Record<CityTool, string> = {
   move: "도시를 끌어 옮깁니다. 수도를 옮기면 그 자리가 수도의 나라 땅이 됩니다.",
   add: "빈 땅을 누르면 도시가 생깁니다. 이름은 자동으로 붙고, 나중에 바꿀 수 있습니다.",
   delete: "도시를 누르면 지웁니다. 수도는 지울 수 없습니다.",
   rename: "도시를 누르고 새 이름을 입력합니다.",
   capital: "도시를 누르면 그 도시가 속한 나라의 수도가 됩니다.",
+  newState: "도시를 누르면 그 도시를 수도로 하는 새 나라가 생깁니다. 원래 나라의 영토는 두 수도 중 가까운 쪽으로 나뉩니다.",
 };
 let editMode = false;
 let editTarget: EditTarget = "terrain";
@@ -177,6 +179,26 @@ function renderPaintStates(w: WorldMap): void {
   none.textContent = "무소속 (지우기)";
   paintStateEl.replaceChildren(...opts, none);
   if ([...paintStateEl.options].some((o) => o.value === selected)) paintStateEl.value = selected;
+  renderMergeTargets();
+}
+
+/** 국가 없애기에서 영토를 넘겨받을 곳: 무소속 + 고른 나라를 뺀 나머지 */
+function renderMergeTargets(): void {
+  if (!world) return;
+  const selected = mergeIntoEl.value;
+  const removing = Number(paintStateEl.value);
+  const none = document.createElement("option");
+  none.value = "-1";
+  none.textContent = "무소속";
+  const opts = world.states.filter((s) => s.id !== removing).map((s) => {
+    const o = document.createElement("option");
+    o.value = String(s.id);
+    o.textContent = s.name;
+    return o;
+  });
+  mergeIntoEl.replaceChildren(none, ...opts);
+  if ([...mergeIntoEl.options].some((o) => o.value === selected)) mergeIntoEl.value = selected;
+  $<HTMLButtonElement>("deleteState").disabled = !(removing >= 0 && world.states[removing]);
 }
 
 function updateEditButtons(): void {
@@ -451,22 +473,23 @@ function snap(): Snapshot {
   return { elevation: elevation!, civ };
 }
 
-/** 편집 연산을 되돌리기 기록과 함께 실행한다. 실패하면 기록을 남기지 않는다. */
-function applyCivEdit(edit: (c: CivState) => EditResult, success?: string): void {
-  if (!elevation) return;
+/** 편집 연산을 되돌리기 기록과 함께 실행한다. 실패하면 기록을 남기지 않고 false. */
+function applyCivEdit(edit: (c: CivState) => EditResult, success?: string): boolean {
+  if (!elevation) return false;
   const before: Snapshot = { elevation: Float64Array.from(elevation), civ: civ && cloneCiv(civ) };
   const target = ensureCiv();
-  if (!target) return;
+  if (!target) return false;
   const error = edit(target);
   if (error) {
     // 실패한 편집이 자동 배치→직접 편집 전환만 일으키지 않도록 원래 상태로 돌린다.
     civ = before.civ;
     setStatus(error, true);
-    return;
+    return false;
   }
   editHistory.record(before);
   commit();
   if (success) setStatus(success);
+  return true;
 }
 
 // ── 포인터 입력 ──────────────────────────────────────────────────────
@@ -542,6 +565,17 @@ function handleCityClick(x: number, y: number): void {
     applyCivEdit((c) => renameCity(c, civIndex(c), next, style), "이름을 바꿨습니다.");
   } else if (cityTool === "capital") {
     applyCivEdit((c) => makeCapital(c, civIndex(c)), `'${name}'을(를) 수도로 정했습니다.`);
+  } else if (cityTool === "newState") {
+    // 무소속 땅에 세울 때 가져갈 범위: 나라 하나가 차지할 법한 면적의 반지름 절반쯤
+    const claim = Math.sqrt((options.width * options.height * options.landRatio) / Math.max(1, world.states.length + 1)) * 0.5;
+    const ok = applyCivEdit((c) => createState(mesh!, c, civIndex(c), elevation!, world!.hydro.isLake, style, options.seed, claim));
+    if (ok && world) {
+      // 새 나라는 항상 목록 끝에 붙는다: 국경 탭에서 바로 다듬을 수 있게 선택해 둔다.
+      const created = world.states[world.states.length - 1];
+      paintStateEl.value = String(created.id);
+      renderMergeTargets();
+      setStatus(`'${name}'을(를) 수도로 하는 새 나라 '${created.name}'을(를) 세웠습니다. 국경 탭에서 영토를 다듬을 수 있습니다.`);
+    }
   }
 }
 
@@ -754,6 +788,17 @@ $("resetCiv").addEventListener("click", () => {
   editHistory.record(snap());
   civ = undefined;
   commit();
+});
+paintStateEl.addEventListener("change", renderMergeTargets);
+$("deleteState").addEventListener("click", () => {
+  if (!world) return;
+  const id = Number(paintStateEl.value);
+  const state = world.states[id];
+  if (!state) { setStatus("없앨 국가를 먼저 고르세요.", true); return; }
+  const merge = Number(mergeIntoEl.value);
+  const dest = merge >= 0 ? `'${world.states[merge]?.name}'에 합칩니다` : "무소속이 됩니다";
+  if (!confirm(`'${state.name}'을(를) 없앨까요? 영토는 ${dest}. 수도였던 도시는 일반 도시로 남습니다. (되돌리기로 복구할 수 있습니다)`)) return;
+  applyCivEdit((c) => deleteState(c, id, merge), `'${state.name}'을(를) 없앴습니다.`);
 });
 $("renameState").addEventListener("click", () => {
   if (!world) return;

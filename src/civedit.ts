@@ -1,3 +1,4 @@
+import { distinctColor } from "./civ.ts";
 import type { Mesh } from "./mesh.ts";
 import { NameGenerator, type NameStyle } from "./names.ts";
 import { subRng } from "./rng.ts";
@@ -153,6 +154,63 @@ export function makeCapital(civ: CivState, index: number): EditResult {
   return null;
 }
 
+export const MAX_STATES = 30;
+
+/**
+ * 도시를 수도로 하는 새 나라를 만든다.
+ * - 도시가 어떤 나라 땅에 있으면: 그 나라 영토를 두 수도 중 가까운 쪽으로 나눈다.
+ * - 무소속 땅이면: 수도에서 claimRadius 안의 무소속 육지를 가져간다.
+ * 이름은 ensureCivNames로, 색은 기존 나라들과 구분되는 색으로 정한다. 새 나라 번호는 civ.states 끝.
+ */
+export function createState(
+  mesh: Mesh, civ: CivState, cityIndex: number, elevation: Float64Array, isLake: Uint8Array,
+  style: NameStyle, seed: string, claimRadius: number,
+): EditResult {
+  const city = civ.cities[cityIndex];
+  if (!city) return "도시를 찾을 수 없습니다.";
+  if (isCapital(civ, cityIndex)) return "이미 한 나라의 수도입니다. 일반 도시를 골라 주세요.";
+  if (civ.states.length >= MAX_STATES) return `나라는 ${MAX_STATES}개까지 만들 수 있습니다.`;
+  if (!isSettleable(elevation, isLake, city.cell)) return "물에 잠긴 도시로는 나라를 만들 수 없습니다.";
+
+  const id = civ.states.length;
+  const parent = civ.owner[city.cell];
+  const cap = city.cell;
+  const d2 = (i: number, c: number): number => (mesh.x[i] - mesh.x[c]) ** 2 + (mesh.y[i] - mesh.y[c]) ** 2;
+  if (parent >= 0 && civ.states[parent]) {
+    const oldCap = civ.cities[civ.states[parent].capitalCity].cell;
+    for (let i = 0; i < mesh.count; i++) {
+      if (civ.owner[i] === parent && d2(i, cap) < d2(i, oldCap)) civ.owner[i] = id;
+    }
+  } else {
+    const r2 = claimRadius * claimRadius;
+    for (let i = 0; i < mesh.count; i++) {
+      if (civ.owner[i] < 0 && isSettleable(elevation, isLake, i) && d2(i, cap) < r2) civ.owner[i] = id;
+    }
+  }
+  civ.owner[cap] = id;
+  civ.states.push({ names: {}, color: distinctColor(civ.states.map((s) => s.color)), capitalCity: cityIndex });
+  ensureCivNames(civ, style, seed);
+  return null;
+}
+
+/**
+ * 나라를 없앤다. 영토는 mergeInto 나라로 넘기거나(-1이면 무소속), 수도였던 도시는 일반 도시로 남는다.
+ * 뒤쪽 나라 번호는 하나씩 당겨진다.
+ */
+export function deleteState(civ: CivState, stateId: number, mergeInto: number): EditResult {
+  if (!civ.states[stateId]) return "국가를 찾을 수 없습니다.";
+  if (mergeInto === stateId) return "없앨 나라에 영토를 넘길 수는 없습니다.";
+  if (mergeInto !== -1 && !civ.states[mergeInto]) return "영토를 넘겨받을 국가를 찾을 수 없습니다.";
+  const shift = (o: number): number => (o > stateId ? o - 1 : o);
+  const target = mergeInto === -1 ? -1 : shift(mergeInto);
+  for (let i = 0; i < civ.owner.length; i++) {
+    const o = civ.owner[i];
+    civ.owner[i] = o === stateId ? target : shift(o);
+  }
+  civ.states.splice(stateId, 1);
+  return null;
+}
+
 /**
  * 원 안의 육지 셀을 stateId 나라 땅으로 칠한다 (-1이면 무소속).
  * 다른 나라 수도가 있는 셀은 건드리지 않는다 (수도가 자기 나라 밖에 놓이지 않게). 바뀐 셀 수를 돌려준다.
@@ -219,7 +277,7 @@ export function civFromJSON(data: unknown, cellCount: number): CivState | undefi
   if (typeof data !== "object" || data === null) return undefined;
   const o = data as Record<string, unknown>;
   if (!Array.isArray(o.cities) || !Array.isArray(o.states) || typeof o.owner !== "string") return undefined;
-  if (o.cities.length > 500 || o.states.length > 30) return undefined;
+  if (o.cities.length > 500 || o.states.length > MAX_STATES) return undefined;
 
   const names = (v: unknown): Partial<Record<NameStyle, string>> | undefined => {
     if (typeof v !== "object" || v === null) return undefined;

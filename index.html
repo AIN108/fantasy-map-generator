@@ -94,6 +94,7 @@
               <label><input type="radio" name="cityTool" value="delete" /> 삭제</label>
               <label><input type="radio" name="cityTool" value="rename" /> 이름 바꾸기</label>
               <label><input type="radio" name="cityTool" value="capital" /> 수도 지정</label>
+              <label><input type="radio" name="cityTool" value="newState" /> 새 국가</label>
             </div>
           </div>
 
@@ -103,6 +104,14 @@
               <select id="paintState"></select>
             </label>
             <button type="button" id="renameState" class="wide">선택한 국가 이름 바꾸기</button>
+            <details class="danger-zone">
+              <summary>국가 없애기</summary>
+              <label class="field">
+                <span>영토를 넘길 곳</span>
+                <select id="mergeInto"></select>
+              </label>
+              <button type="button" id="deleteState" class="wide">선택한 국가 없애기</button>
+            </details>
           </div>
 
           <p class="hint" id="toolHint"></p>

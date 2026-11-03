@@ -143,6 +143,10 @@ canvas {
 .editor .tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
 .editor .wide { width: 100%; font-size: 12.5px; }
 .editor select { margin-bottom: 6px; }
+.editor .danger-zone { margin-top: 8px; font-size: 13px; }
+.editor .danger-zone summary { cursor: pointer; color: var(--muted); }
+.editor .danger-zone[open] summary { margin-bottom: 6px; }
+.editor #deleteState { color: #c0392b; }
 .editor:not(.active) .tools, .editor:not(.active) .field, .editor:not(.active) .hint, .editor:not(.active) .tabs { opacity: 0.55; }
 button:disabled { opacity: 0.45; cursor: default; }
 button:disabled:hover { border-color: var(--line); }

@@ -239,3 +239,20 @@ export function stateColor(index: number, rng: Rng): string {
   const hue = (index * 137.508 + rng() * 20) % 360;
   return `hsl(${hue.toFixed(1)} 55% 50%)`;
 }
+
+/** 이미 쓰인 국가 색과 색상환에서 충분히 떨어진 새 색 (물려받은 색과 헷갈리지 않게) */
+export function distinctColor(used: string[]): string {
+  const hueOf = (c: string): number => Number(/hsl\(([\d.]+)/.exec(c)?.[1] ?? NaN);
+  const usedHues = used.map(hueOf).filter(Number.isFinite);
+  const gap = (h: number): number => Math.min(...usedHues.map((u) => Math.min(Math.abs(h - u), 360 - Math.abs(h - u))), 360);
+  let best = 0, bestGap = -1;
+  for (let k = 0; k < 72; k++) {
+    const h = (k * 137.508) % 360;
+    const g = gap(h);
+    if (g > bestGap) { best = h; bestGap = g; }
+    if (g >= 28) break;
+  }
+  const color = `hsl(${best.toFixed(1)} 55% 50%)`;
+  used.push(color);
+  return color;
+}

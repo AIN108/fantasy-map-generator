@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
-  addCity, civFromJSON, civToJSON, cloneCiv, deleteCity, ensureCivNames, isCapital, makeCapital, moveCity,
-  paintTerritory, renameCity, renameState, snapshotCiv, type CivState,
+  addCity, civFromJSON, civToJSON, cloneCiv, createState, deleteCity, deleteState, ensureCivNames, isCapital,
+  makeCapital, MAX_STATES, moveCity, paintTerritory, renameCity, renameState, snapshotCiv, type CivState,
 } from "../src/civedit.ts";
 import { applyBrush } from "../src/editor.ts";
 import { forEachNeighbor } from "../src/mesh.ts";
@@ -207,5 +207,110 @@ describe("저장 형식", () => {
     copy.owner[0] = 5;
     assert.notEqual(civ.cities[0].names.korean, "바뀜");
     assert.notEqual(civ.owner[0], 5);
+  });
+});
+
+describe("국가 만들기·없애기", () => {
+  test("나라 안의 도시로 새 나라를 만들면 영토를 두 수도 중 가까운 쪽으로 나눈다", () => {
+    const civ = fresh();
+    const t = civ.cities.findIndex((c, i) => !isCapital(civ, i) && civ.owner[c.cell] >= 0);
+    const cell = civ.cities[t].cell;
+    const parent = civ.owner[cell];
+    const parentCap = civ.cities[civ.states[parent].capitalCity].cell;
+    const parentCellsBefore = civ.owner.filter((o) => o === parent).length;
+    assert.equal(createState(mesh, civ, t, elevation, isLake, "korean", OPTS.seed, 100), null);
+    const id = civ.states.length - 1;
+    assert.equal(civ.states[id].capitalCity, t);
+    assert.equal(civ.owner[cell], id);
+    const d2 = (i: number, c: number): number => (mesh.x[i] - mesh.x[c]) ** 2 + (mesh.y[i] - mesh.y[c]) ** 2;
+    let newCells = 0;
+    for (let i = 0; i < mesh.count; i++) {
+      if (civ.owner[i] === id) { newCells++; assert.ok(i === cell || d2(i, cell) < d2(i, parentCap)); }
+      if (civ.owner[i] === parent) assert.ok(d2(i, parentCap) <= d2(i, cell));
+    }
+    assert.ok(newCells > 1);
+    assert.equal(civ.owner.filter((o) => o === parent).length + newCells, parentCellsBefore);
+    // 다른 나라 영토는 그대로
+    for (let i = 0; i < mesh.count; i++) {
+      if (auto.owner[i] !== parent) assert.equal(civ.owner[i], auto.owner[i]);
+    }
+    // 이름·색이 기존 나라와 겹치지 않는다
+    const names = civ.states.map((s) => s.names.korean);
+    assert.equal(new Set(names).size, names.length);
+    assert.ok(!civ.states.slice(0, -1).some((s) => s.color === civ.states[id].color));
+    const w = deriveWorld(OPTS, mesh, elevation, false, undefined, civ);
+    assert.equal(w.states.length, auto.states.length + 1);
+    assert.ok(w.cities.find((c) => c.cell === cell)!.capital);
+  });
+
+  test("무소속 땅의 도시로 만들면 주변 무소속 땅만 가져간다", () => {
+    const civ = fresh();
+    const t = townIndex(civ);
+    const cell = civ.cities[t].cell;
+    // 도시 주변을 무소속으로 만든 뒤 나라를 세운다
+    paintTerritory(mesh, civ, elevation, isLake, mesh.x[cell], mesh.y[cell], 60, -1);
+    const ownedBefore = Int32Array.from(civ.owner);
+    assert.equal(createState(mesh, civ, t, elevation, isLake, "korean", OPTS.seed, 40), null);
+    const id = civ.states.length - 1;
+    for (let i = 0; i < mesh.count; i++) {
+      if (ownedBefore[i] >= 0) assert.equal(civ.owner[i], ownedBefore[i], "원래 있던 나라 땅은 건드리지 않는다");
+      if (civ.owner[i] === id) assert.ok(Math.hypot(mesh.x[i] - mesh.x[cell], mesh.y[i] - mesh.y[cell]) < 40);
+    }
+    assert.ok(civ.owner.filter((o) => o === id).length > 1);
+  });
+
+  test("수도로는 새 나라를 만들 수 없고, 나라 수에는 상한이 있다", () => {
+    const civ = fresh();
+    assert.match(createState(mesh, civ, civ.states[0].capitalCity, elevation, isLake, "korean", OPTS.seed, 50)!, /이미/);
+    let made = 0;
+    for (let i = 0; i < civ.cities.length && civ.states.length < MAX_STATES; i++) {
+      if (!isCapital(civ, i) && createState(mesh, civ, i, elevation, isLake, "korean", OPTS.seed, 30) === null) made++;
+    }
+    assert.ok(made > 0);
+    if (civ.states.length === MAX_STATES) {
+      const free = civ.cities.findIndex((_, i) => !isCapital(civ, i));
+      if (free >= 0) assert.match(createState(mesh, civ, free, elevation, isLake, "korean", OPTS.seed, 30)!, /까지/);
+    }
+  });
+
+  test("나라를 없애면 영토가 무소속이 되고, 뒤쪽 나라 번호가 당겨진다", () => {
+    const civ = fresh();
+    const removed = 1;
+    const capCity = civ.states[removed].capitalCity;
+    const lastName = civ.states[civ.states.length - 1].names.korean;
+    const lastCells = civ.owner.filter((o) => o === civ.states.length - 1).length;
+    assert.equal(deleteState(civ, removed, -1), null);
+    assert.equal(civ.states.length, auto.states.length - 1);
+    for (let i = 0; i < mesh.count; i++) {
+      if (auto.owner[i] === removed) assert.equal(civ.owner[i], -1);
+      else if (auto.owner[i] > removed) assert.equal(civ.owner[i], auto.owner[i] - 1);
+    }
+    assert.equal(civ.states[civ.states.length - 1].names.korean, lastName);
+    assert.equal(civ.owner.filter((o) => o === civ.states.length - 1).length, lastCells);
+    assert.ok(!isCapital(civ, capCity), "수도였던 도시는 일반 도시로 남는다");
+    assert.ok(civ.cities[capCity]);
+    const w = deriveWorld(OPTS, mesh, elevation, false, undefined, civ);
+    assert.equal(w.states.length, auto.states.length - 1);
+  });
+
+  test("나라를 없애면서 영토를 다른 나라에 합칠 수 있다", () => {
+    const civ = fresh();
+    const removedCells = civ.owner.filter((o) => o === 0).length;
+    const targetCells = civ.owner.filter((o) => o === 2).length;
+    assert.equal(deleteState(civ, 0, 2), null);
+    // 0번이 빠지면서 2번은 1번이 된다
+    assert.equal(civ.owner.filter((o) => o === 1).length, removedCells + targetCells);
+    assert.match(deleteState(civ, 0, 0)!, /없앨 나라/);
+    assert.match(deleteState(civ, 0, 99)!, /찾을 수 없/);
+    assert.match(deleteState(civ, 99, -1)!, /찾을 수 없/);
+  });
+
+  test("만들고 없앤 결과도 저장·불러오기 후 그대로다", () => {
+    const civ = fresh();
+    createState(mesh, civ, townIndex(civ), elevation, isLake, "korean", OPTS.seed, 50);
+    deleteState(civ, 0, -1);
+    const back = civFromJSON(JSON.parse(JSON.stringify(civToJSON(civ))), mesh.count)!;
+    assert.deepEqual(back.states, civ.states);
+    assert.deepEqual(Array.from(back.owner), Array.from(civ.owner));
   });
 });
