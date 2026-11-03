@@ -163,11 +163,14 @@ class LabelPlacer {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly width: number;
   private readonly height: number;
+  /** 글자 테두리·여백의 배율 (확대해도 화면에서 같은 굵기로 보이게) */
+  private readonly scale: number;
 
-  constructor(ctx: CanvasRenderingContext2D, width: number, height: number) {
+  constructor(ctx: CanvasRenderingContext2D, width: number, height: number, scale = 1) {
     this.ctx = ctx;
     this.width = width;
     this.height = height;
+    this.scale = scale;
   }
 
   reserve(box: Box): void {
@@ -178,29 +181,45 @@ class LabelPlacer {
   place(text: string, font: string, candidates: [number, number, CanvasTextAlign][], color: string, halo = "rgba(255,255,255,0.85)"): boolean {
     const ctx = this.ctx;
     ctx.font = font;
+    // 글꼴 크기는 화면 픽셀 기준. 겹침 판정은 지도 단위로 환산해서 한다.
     const m = ctx.measureText(text);
-    const w = m.width, h = m.actualBoundingBoxAscent + m.actualBoundingBoxDescent || 12;
+    const k = this.scale;
+    const w = m.width * k, h = (m.actualBoundingBoxAscent + m.actualBoundingBoxDescent || 12) * k;
     for (const [x, y, align] of candidates) {
       const left = align === "center" ? x - w / 2 : align === "right" ? x - w : x;
-      const box = { x: left - 2, y: y - h - 1, w: w + 4, h: h + 4 };
+      const box = { x: left - 2 * k, y: y - h - k, w: w + 4 * k, h: h + 4 * k };
       if (box.x < 0 || box.y < 0 || box.x + box.w > this.width || box.y + box.h > this.height) continue;
       if (this.boxes.some((b) => overlaps(b, box))) continue;
       this.boxes.push(box);
+      // 확대 변환을 상쇄한 좌표계에서 원래 크기 글꼴로 그린다
+      // (작은 글꼴을 늘려 그리면 글자가 흐릿해진다).
+      const t = ctx.getTransform();
+      ctx.save();
+      ctx.setTransform(t.a * k, t.b * k, t.c * k, t.d * k, t.a * x + t.c * y + t.e, t.b * x + t.d * y + t.f);
       ctx.textAlign = align;
       ctx.textBaseline = "alphabetic";
       ctx.lineJoin = "round";
       ctx.lineWidth = 3;
       ctx.strokeStyle = halo;
-      ctx.strokeText(text, x, y);
+      ctx.strokeText(text, 0, 0);
       ctx.fillStyle = color;
-      ctx.fillText(text, x, y);
+      ctx.fillText(text, 0, 0);
+      ctx.restore();
       return true;
     }
     return false;
   }
 }
 
-export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cache: RenderCache, layers: Layers): void {
+/**
+ * 지도를 지도 좌표로 그린다 (확대·이동은 호출하는 쪽이 ctx 변환으로 건다).
+ * zoom: 현재 확대 배율. 지명 글자는 이 값으로 나눠 그려서 화면에서 늘 같은 크기로 보이고,
+ * 확대할수록 글자끼리 덜 겹쳐 더 많은 지명이 드러난다. 지형·선·아이콘은 지도와 함께 커진다.
+ */
+export function renderWorld(
+  ctx: CanvasRenderingContext2D, world: WorldMap, cache: RenderCache, layers: Layers, zoom = 1,
+): void {
+  const k = 1 / (Number.isFinite(zoom) && zoom > 0 ? zoom : 1);
   const { mesh, elevation, hydro } = world;
   ctx.save();
   ctx.clearRect(0, 0, mesh.width, mesh.height);
@@ -368,7 +387,7 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
     }
   }
 
-  const placer = new LabelPlacer(ctx, mesh.width, mesh.height);
+  const placer = new LabelPlacer(ctx, mesh.width, mesh.height, k);
 
   // 6-3) 항구·시설물 아이콘
   if (layers.facilities) {
@@ -410,7 +429,8 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
       if (s.cellCount < 30) continue;
       const x = mesh.x[s.labelCell], y = mesh.y[s.labelCell];
       const size = Math.round(Math.min(30, 14 + Math.sqrt(s.cellCount) * 0.45));
-      placer.place(s.name, `600 ${size}px ${LABEL_FONT}`, [[x, y, "center"], [x, y - size, "center"], [x, y + size, "center"]], "rgba(40,30,25,0.75)", "rgba(255,255,255,0.55)");
+      const sz = size * k;
+      placer.place(s.name, `600 ${size}px ${LABEL_FONT}`, [[x, y, "center"], [x, y - sz, "center"], [x, y + sz, "center"]], "rgba(40,30,25,0.75)", "rgba(255,255,255,0.55)");
     }
     // 수도 → 도시 순서로
     if (layers.cities) {
@@ -418,7 +438,12 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
       for (const c of ordered) {
         const x = mesh.x[c.cell], y = mesh.y[c.cell];
         const font = c.capital ? `700 14px ${LABEL_FONT}` : `500 11.5px ${LABEL_FONT}`;
-        placer.place(c.name, font, [[x + 7, y + 4, "left"], [x - 7, y + 4, "right"], [x, y - 8, "center"], [x, y + 16, "center"]], "#1e1e1e");
+        // 도시 표시(지도와 함께 커짐) 바깥에 글자 간격(화면 크기 고정)만큼 띄운다
+        const r = c.capital ? 4 : 2.6;
+        const gap = r + (c.capital ? 3 : 4.4) * k;
+        placer.place(c.name, font, [
+          [x + gap, y + 4 * k, "left"], [x - gap, y + 4 * k, "right"], [x, y - r - (c.capital ? 4 : 5.4) * k, "center"], [x, y + r + (c.capital ? 12 : 13.4) * k, "center"],
+        ], "#1e1e1e");
       }
     }
     // 이름 붙인 항구·시설물
@@ -426,9 +451,11 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
       for (const f of [...world.ports, ...world.facilities]) {
         if (!f.name) continue;
         const x = mesh.x[f.cell], y = mesh.y[f.cell];
+        // 아이콘 반경 7(지도 단위) + 글자 간격
+        const gx = 7 + 2 * k;
         placer.place(f.name, `500 11px ${LABEL_FONT}`, [
-          [x + 9, y + 4, "left"], [x - 9, y + 4, "right"], [x, y - 10, "center"], [x, y + 19, "center"],
-          [x + 9, y - 6, "left"], [x - 9, y - 6, "right"], [x + 9, y + 15, "left"], [x - 9, y + 15, "right"],
+          [x + gx, y + 4 * k, "left"], [x - gx, y + 4 * k, "right"], [x, y - 7 - 3 * k, "center"], [x, y + 7 + 12 * k, "center"],
+          [x + gx, y - 6 * k, "left"], [x - gx, y - 6 * k, "right"], [x + gx, y + 15 * k, "left"], [x - gx, y + 15 * k, "right"],
         ], "#3a2f25");
       }
     }
@@ -437,13 +464,13 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
       for (const r of world.rivers) {
         if (!r.name) continue;
         const mid = r.cells[Math.floor(r.cells.length / 2)];
-        placer.place(r.name, `italic 500 11px ${LABEL_FONT}`, [[mesh.x[mid], mesh.y[mid] - 5, "center"], [mesh.x[mid], mesh.y[mid] + 13, "center"]], "#24527f");
+        placer.place(r.name, `italic 500 11px ${LABEL_FONT}`, [[mesh.x[mid], mesh.y[mid] - 5 * k, "center"], [mesh.x[mid], mesh.y[mid] + 13 * k, "center"]], "#24527f");
       }
     }
     // 산봉우리
     for (const p of world.peaks) {
       const x = mesh.x[p.cell], y = mesh.y[p.cell];
-      if (placer.place(`▲ ${p.name}`, `500 11px ${LABEL_FONT}`, [[x, y, "center"], [x, y + 14, "center"]], "#4a3b2c")) continue;
+      if (placer.place(`▲ ${p.name}`, `500 11px ${LABEL_FONT}`, [[x, y, "center"], [x, y + 14 * k, "center"]], "#4a3b2c")) continue;
     }
   }
   ctx.restore();

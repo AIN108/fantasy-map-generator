@@ -197,7 +197,7 @@ function draw(): void {
   clearTimeout(sharpTimer);
   const s = view.scale;
   ctx!.setTransform(s, 0, 0, s, -view.x * s, -view.y * s);
-  renderWorld(ctx!, world, cache, layers);
+  renderWorld(ctx!, world, cache, layers, s);
   ctx!.setTransform(1, 0, 0, 1, 0, 0);
   fullFresh = false;
   if (s === 1) copyToFull(); // 전체 보기라면 방금 그린 화면이 곧 사본이다
