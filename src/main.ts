@@ -82,6 +82,7 @@ let cache: RenderCache | undefined;
 let layers: Layers = { ...DEFAULT_LAYERS };
 /** 확대·이동 상태. 지도 데이터와 무관한 보기 설정이라 저장·되돌리기에 넣지 않는다. */
 let view: View = identityView();
+let mapSize = "";
 
 /** 되돌리기 단위: 지형과 문명을 함께 보관한다. */
 interface Snapshot { elevation: Float64Array; civ?: CivState; infra: Infra }
@@ -187,51 +188,102 @@ function eul(word: string): string {
 }
 
 // ── 그리기 ───────────────────────────────────────────────────────────
-/** 지도 전체를 원래 배율로 그린 사본 (확대·이동 중 빠른 미리보기와 PNG 저장용) */
-const fullCanvas = document.createElement("canvas");
-let fullFresh = false;
+// 좌표계 세 가지: 지도 좌표(메시), 보기 좌표(지도 크기 options.width×height 기준의 화면 위치, View가 다루는 값),
+// 기기 픽셀(캔버스 실제 해상도 = 화면 표시 크기 × devicePixelRatio). pixelRatio()가 보기 좌표 → 기기 픽셀 배율이다.
+const pixelRatio = (): number => canvas.width / options.width;
 
-/** 현재 보기(확대·이동)로 지도를 선명하게 다시 그린다. */
-function draw(): void {
+/** 지명을 뺀 전체 지도 사본 (확대·이동 중 늘려 쓰는 바탕, 기기 픽셀 해상도) */
+const baseCanvas = document.createElement("canvas");
+let baseFresh = false;
+
+/** 기기 픽셀 해상도를 화면 표시 크기에 맞춘다. 바뀌었으면 true. */
+function syncBacking(): boolean {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = Math.min(3, Math.max(1, window.devicePixelRatio || 1));
+  // 화면에 아직 그려지지 않았으면(폭 0) 지도 크기를 그대로 쓴다. 너무 큰 캔버스는 막는다.
+  const cssWidth = rect.width > 0 ? rect.width : options.width;
+  const w = Math.max(1, Math.min(4096, Math.round(cssWidth * dpr)));
+  const h = Math.max(1, Math.round((w * options.height) / options.width));
+  if (canvas.width === w && canvas.height === h) return false;
+  canvas.width = overlay.width = w;
+  canvas.height = overlay.height = h;
+  baseFresh = false;
+  return true;
+}
+
+/** 칠하는 동안 바탕을 그릴 낮은 해상도 캔버스 (화면 표시 크기 = DPR 1) */
+const lowCanvas = document.createElement("canvas");
+
+/**
+ * 현재 보기(확대·이동)로 지도를 다시 그린다.
+ * fast: 칠하는 동안에는 바탕을 화면 표시 해상도(DPR 1)로 그려 늘려 쓰고 지명만 기기 해상도로 얹는다.
+ * 고해상도 화면에서 픽셀 수가 4~9배라 칠하기가 느려지는 것을 막는다. 손을 떼면 선명하게 다시 그린다.
+ */
+function draw(fast = false): void {
   if (!world || !cache) return;
   clearTimeout(sharpTimer);
-  const s = view.scale;
-  ctx!.setTransform(s, 0, 0, s, -view.x * s, -view.y * s);
-  renderWorld(ctx!, world, cache, layers, s);
+  const s = view.scale, r = pixelRatio();
   ctx!.setTransform(1, 0, 0, 1, 0, 0);
-  fullFresh = false;
-  if (s === 1) copyToFull(); // 전체 보기라면 방금 그린 화면이 곧 사본이다
-}
-
-function copyToFull(): void {
-  fullCanvas.width = canvas.width;
-  fullCanvas.height = canvas.height;
-  fullCanvas.getContext("2d")!.drawImage(canvas, 0, 0);
-  fullFresh = true;
-}
-
-function fullMapCanvas(): HTMLCanvasElement {
-  if (!fullFresh && world && cache) {
-    fullCanvas.width = canvas.width;
-    fullCanvas.height = canvas.height;
-    renderWorld(fullCanvas.getContext("2d")!, world, cache, layers);
-    fullFresh = true;
+  const cssWidth = Math.round(canvas.getBoundingClientRect().width);
+  if (fast && cssWidth > 0 && cssWidth < canvas.width) {
+    baseFresh = false;
+    const lr = cssWidth / options.width;
+    lowCanvas.width = cssWidth;
+    lowCanvas.height = Math.max(1, Math.round((cssWidth * options.height) / options.width));
+    const l = lowCanvas.getContext("2d")!;
+    l.setTransform(s * lr, 0, 0, s * lr, -view.x * s * lr, -view.y * s * lr);
+    renderWorld(l, world, cache, layers, s, "base");
+    ctx!.clearRect(0, 0, canvas.width, canvas.height);
+    ctx!.drawImage(lowCanvas, 0, 0, canvas.width, canvas.height);
+    ctx!.setTransform(s * r, 0, 0, s * r, -view.x * s * r, -view.y * s * r);
+    renderWorld(ctx!, world, cache, layers, s, "labels");
+  } else if (s === 1) {
+    // 전체 보기: 바탕을 사본에 그려 옮기고 지명만 덧그린다 (사본을 따로 만드는 비용이 들지 않는다).
+    renderBase();
+    ctx!.clearRect(0, 0, canvas.width, canvas.height);
+    ctx!.drawImage(baseCanvas, 0, 0);
+    ctx!.setTransform(r, 0, 0, r, 0, 0);
+    renderWorld(ctx!, world, cache, layers, 1, "labels");
+  } else {
+    baseFresh = false;
+    ctx!.setTransform(s * r, 0, 0, s * r, -view.x * s * r, -view.y * s * r);
+    renderWorld(ctx!, world, cache, layers, s);
   }
-  return fullCanvas;
+  ctx!.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+function renderBase(): void {
+  if (!world || !cache) return;
+  const r = pixelRatio();
+  baseCanvas.width = canvas.width;
+  baseCanvas.height = canvas.height;
+  const b = baseCanvas.getContext("2d")!;
+  b.setTransform(r, 0, 0, r, 0, 0);
+  renderWorld(b, world, cache, layers, 1, "base");
+  baseFresh = true;
+}
+
+/** PNG 저장용: 보고 있는 화면과 관계없이 지도 전체를 원래 크기(options.width×height)로 그린다. */
+function exportCanvas(): HTMLCanvasElement {
+  const out = document.createElement("canvas");
+  out.width = options.width;
+  out.height = options.height;
+  if (world && cache) renderWorld(out.getContext("2d")!, world, cache, layers);
+  return out;
 }
 
 // ── 확대·이동 ────────────────────────────────────────────────────────
 let sharpTimer = 0;
 let fastQueued = false;
-/** 마지막으로 마우스가 있던 캔버스 픽셀 좌표 (휠로 확대한 뒤 커서를 다시 그리기 위해) */
+/** 마지막으로 마우스가 있던 보기 좌표 (휠로 확대한 뒤 커서를 다시 그리기 위해) */
 let hoverPx: [number, number] | undefined;
 
 /**
- * 보기를 바꾼다. 움직이는 동안에는 전체 사본을 늘려 빠르게 보여 주고,
+ * 보기를 바꾼다. 움직이는 동안에는 바탕 사본을 늘리고 지명만 새로 얹어 빠르게 보여 주고,
  * 잠시 멈추면 그 배율로 선명하게 다시 그린다.
  */
 function setView(next: View): void {
-  const clamped = clampView(next, canvas.width, canvas.height);
+  const clamped = clampView(next, options.width, options.height);
   if (sameView(clamped, view)) return;
   view = clamped;
   syncZoomUi();
@@ -249,16 +301,21 @@ function setView(next: View): void {
 }
 
 function drawFast(): void {
-  if (!world) return;
-  const src = fullMapCanvas();
+  if (!world || !cache) return;
+  if (!baseFresh) renderBase();
+  const s = view.scale, r = pixelRatio();
   const w = canvas.width, h = canvas.height;
   ctx!.setTransform(1, 0, 0, 1, 0, 0);
   ctx!.clearRect(0, 0, w, h);
-  ctx!.drawImage(src, view.x, view.y, w / view.scale, h / view.scale, 0, 0, w, h);
+  ctx!.drawImage(baseCanvas, view.x * r, view.y * r, w / s, h / s, 0, 0, w, h);
+  // 지명은 늘리지 않고 현재 배율에 맞춰 새로 배치한다 (움직이는 동안에도 글자 크기가 그대로).
+  ctx!.setTransform(s * r, 0, 0, s * r, -view.x * s * r, -view.y * s * r);
+  renderWorld(ctx!, world, cache, layers, s, "labels");
+  ctx!.setTransform(1, 0, 0, 1, 0, 0);
 }
 
 function zoomBy(factor: number): void {
-  setView(zoomAt(view, factor, canvas.width / 2, canvas.height / 2, canvas.width, canvas.height));
+  setView(zoomAt(view, factor, options.width / 2, options.height / 2, options.width, options.height));
 }
 
 function syncZoomUi(): void {
@@ -347,13 +404,14 @@ function derive(natureOnly = false): void {
     }
     world = applyInfra(derived, infra);
     cache = buildRenderCache(world);
-    if (canvas.width !== options.width || canvas.height !== options.height) {
-      canvas.width = overlay.width = options.width;
-      canvas.height = overlay.height = options.height;
+    if (mapSize !== `${options.width}x${options.height}`) {
+      mapSize = `${options.width}x${options.height}`;
+      canvas.style.aspectRatio = overlay.style.aspectRatio = `${options.width} / ${options.height}`;
       view = identityView();
       syncZoomUi();
     }
-    draw();
+    syncBacking();
+    draw(painting); // 칠하는 중이면 빠르게, 손을 뗀 뒤(commit)에는 선명하게
     if (natureOnly) return;
     renderLegend(world);
     renderPaintStates(world);
@@ -539,10 +597,10 @@ function setTool(tool: BrushTool): void {
   updateHint();
 }
 
-/** 화면(client) 좌표 → 캔버스 픽셀 좌표 */
+/** 화면(client) 좌표 → 보기 좌표 (지도 크기 기준, 확대 전) */
 function canvasPx(e: { clientX: number; clientY: number }): [number, number] {
   const rect = canvas.getBoundingClientRect();
-  return [((e.clientX - rect.left) / rect.width) * canvas.width, ((e.clientY - rect.top) / rect.height) * canvas.height];
+  return [((e.clientX - rect.left) / Math.max(1, rect.width)) * options.width, ((e.clientY - rect.top) / Math.max(1, rect.height)) * options.height];
 }
 
 /** 화면 좌표 → 지도 좌표 (확대·이동 반영) */
@@ -551,14 +609,14 @@ function toMapCoords(e: { clientX: number; clientY: number }): [number, number] 
 }
 
 /** 화면 크기·확대 배율과 관계없이 손가락·마우스로 누르기 쉬운 선택 반경 (지도 좌표) */
-const hitRadius = (): number => (14 * (canvas.width / Math.max(1, canvas.getBoundingClientRect().width))) / view.scale;
+const hitRadius = (): number => (14 * (options.width / Math.max(1, canvas.getBoundingClientRect().width))) / view.scale;
 
 /** 덧그림 캔버스를 비우고, 이후 그리기가 지도 좌표를 쓰도록 보기 변환을 건다. */
 function clearOverlay(): void {
   octx!.setTransform(1, 0, 0, 1, 0, 0);
   octx!.clearRect(0, 0, overlay.width, overlay.height);
-  const s = view.scale;
-  octx!.setTransform(s, 0, 0, s, -view.x * s, -view.y * s);
+  const k = view.scale * pixelRatio();
+  octx!.setTransform(k, 0, 0, k, -view.x * k, -view.y * k);
 }
 
 function strokeCircle(x: number, y: number, r: number, dash: number[] = []): void {
@@ -1243,7 +1301,7 @@ canvas.addEventListener("pointermove", (e) => {
   if (pinch) {
     if (pointers.size >= 2) {
       const { mid, dist } = pinchPoints();
-      setView(anchoredView(pinch.mx, pinch.my, mid[0], mid[1], pinch.scale * (dist / pinch.dist), canvas.width, canvas.height));
+      setView(anchoredView(pinch.mx, pinch.my, mid[0], mid[1], pinch.scale * (dist / pinch.dist), options.width, options.height));
     }
     return;
   }
@@ -1293,7 +1351,7 @@ canvas.addEventListener("wheel", (e) => {
   if ((factor < 1 && view.scale <= MIN_SCALE + 1e-6) || (factor > 1 && view.scale >= MAX_SCALE - 1e-6)) return;
   e.preventDefault();
   hoverPx = canvasPx(e);
-  setView(zoomAt(view, factor, hoverPx[0], hoverPx[1], canvas.width, canvas.height));
+  setView(zoomAt(view, factor, hoverPx[0], hoverPx[1], options.width, options.height));
 }, { passive: false });
 $("zoomIn").addEventListener("click", () => zoomBy(1.5));
 $("zoomOut").addEventListener("click", () => zoomBy(1 / 1.5));
@@ -1497,7 +1555,7 @@ window.addEventListener("blur", () => {
 $("exportPng").addEventListener("click", () => {
   if (!world) return;
   // 확대해서 보고 있어도 지도 전체를 원래 크기로 저장한다.
-  fullMapCanvas().toBlob((blob) => blob && download(`${safeFileName(options.seed)}.png`, blob), "image/png");
+  exportCanvas().toBlob((blob) => blob && download(`${safeFileName(options.seed)}.png`, blob), "image/png");
 });
 $("exportJson").addEventListener("click", () => {
   if (!world) return;
@@ -1530,6 +1588,18 @@ setEditTarget("terrain");
 syncBrush();
 setEditMode(false);
 syncZoomUi();
+// 창 크기·화면 배율(브라우저 확대, 다른 모니터로 이동)이 바뀌면 해상도를 다시 맞춘다.
+let resizeQueued = false;
+const onResize = (): void => {
+  if (resizeQueued) return;
+  resizeQueued = true;
+  requestAnimationFrame(() => {
+    resizeQueued = false;
+    if (world && syncBacking()) { draw(); clearOverlay(); }
+  });
+};
+new ResizeObserver(onResize).observe(canvas);
+window.addEventListener("resize", onResize);
 // 지도 라벨이 대체 글꼴로 그려지지 않도록 웹 글꼴을 먼저 기다린다 (실패해도 진행).
 Promise.race([
   document.fonts.load('600 16px "Noto Serif KR"'),

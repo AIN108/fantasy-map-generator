@@ -211,15 +211,23 @@ class LabelPlacer {
   }
 }
 
+/** 지도에 그리는 부분: 전체, 지명을 뺀 바탕, 지명만 */
+export type RenderPart = "all" | "base" | "labels";
+
 /**
  * 지도를 지도 좌표로 그린다 (확대·이동은 호출하는 쪽이 ctx 변환으로 건다).
  * zoom: 현재 확대 배율. 지명 글자는 이 값으로 나눠 그려서 화면에서 늘 같은 크기로 보이고,
  * 확대할수록 글자끼리 덜 겹쳐 더 많은 지명이 드러난다. 지형·선·아이콘은 지도와 함께 커진다.
+ * part: "base"는 지명 없이 바탕만(확대·이동 중 늘려 쓸 사본용), "labels"는 그 위에 지명만 덧그린다.
  */
 export function renderWorld(
-  ctx: CanvasRenderingContext2D, world: WorldMap, cache: RenderCache, layers: Layers, zoom = 1,
+  ctx: CanvasRenderingContext2D, world: WorldMap, cache: RenderCache, layers: Layers, zoom = 1, part: RenderPart = "all",
 ): void {
-  const k = 1 / (Number.isFinite(zoom) && zoom > 0 ? zoom : 1);
+  if (part !== "labels") drawBase(ctx, world, cache, layers);
+  if (part !== "base" && layers.labels) drawLabels(ctx, world, layers, Number.isFinite(zoom) && zoom > 0 ? 1 / zoom : 1);
+}
+
+function drawBase(ctx: CanvasRenderingContext2D, world: WorldMap, cache: RenderCache, layers: Layers): void {
   const { mesh, elevation, hydro } = world;
   ctx.save();
   ctx.clearRect(0, 0, mesh.width, mesh.height);
@@ -387,19 +395,15 @@ export function renderWorld(
     }
   }
 
-  const placer = new LabelPlacer(ctx, mesh.width, mesh.height, k);
-
   // 6-3) 항구·시설물 아이콘
   if (layers.facilities) {
     for (const port of world.ports) {
       const x = mesh.x[port.cell], y = mesh.y[port.cell];
       drawFacilityIcon(ctx, "port", x, y);
-      placer.reserve({ x: x - 7, y: y - 7, w: 14, h: 14 });
     }
     for (const f of world.facilities) {
       const x = mesh.x[f.cell], y = mesh.y[f.cell];
       drawFacilityIcon(ctx, f.kind, x, y);
-      placer.reserve({ x: x - 7, y: y - 7, w: 14, h: 14 });
     }
   }
 
@@ -410,10 +414,8 @@ export function renderWorld(
       ctx.beginPath();
       if (c.capital) {
         ctx.rect(x - 4, y - 4, 8, 8);
-        placer.reserve({ x: x - 5, y: y - 5, w: 10, h: 10 });
       } else {
         ctx.arc(x, y, 2.6, 0, Math.PI * 2);
-        placer.reserve({ x: x - 3, y: y - 3, w: 6, h: 6 });
       }
       ctx.fillStyle = c.capital ? "#b3261e" : "#fff";
       ctx.strokeStyle = "#222";
@@ -423,7 +425,27 @@ export function renderWorld(
     }
   }
 
-  if (layers.labels) {
+  ctx.restore();
+}
+
+/** 지명을 덧그린다. k = 1 / 확대 배율 (글자 크기·간격을 화면 기준으로 고정). */
+function drawLabels(ctx: CanvasRenderingContext2D, world: WorldMap, layers: Layers, k: number): void {
+  const { mesh } = world;
+  ctx.save();
+  const placer = new LabelPlacer(ctx, mesh.width, mesh.height, k);
+  // 아이콘·도시 표시 자리는 글자가 덮지 않게 비워 둔다 (아이콘은 지도와 함께 커진다).
+  if (layers.facilities) {
+    for (const f of [...world.ports, ...world.facilities]) {
+      placer.reserve({ x: mesh.x[f.cell] - 7, y: mesh.y[f.cell] - 7, w: 14, h: 14 });
+    }
+  }
+  if (layers.cities) {
+    for (const c of world.cities) {
+      const r = c.capital ? 5 : 3;
+      placer.reserve({ x: mesh.x[c.cell] - r, y: mesh.y[c.cell] - r, w: 2 * r, h: 2 * r });
+    }
+  }
+  {
     // 국가 이름 (가장 크게, 먼저 배치)
     for (const s of world.states) {
       if (s.cellCount < 30) continue;
