@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>판타지 지도 생성기</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&family=Noto+Serif+KR:wght@500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="panel">
+        <h1>판타지 지도 생성기</h1>
+        <p class="sub">같은 시드는 항상 같은 지도를 만듭니다.</p>
+
+        <form id="controls" autocomplete="off">
+          <label class="field">
+            <span>시드</span>
+            <div class="row">
+              <input id="seed" name="seed" type="text" maxlength="40" required />
+              <button type="button" id="random" title="무작위 시드">무작위</button>
+            </div>
+          </label>
+
+          <label class="field">
+            <span>지명 스타일</span>
+            <select id="nameStyle" name="nameStyle">
+              <option value="korean">한국어풍</option>
+              <option value="western">서구 판타지풍</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>지형</span>
+            <select id="shape" name="shape">
+              <option value="continent">대륙</option>
+              <option value="archipelago">군도</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>육지 비율 <output for="landRatio" id="landRatioOut"></output></span>
+            <input id="landRatio" name="landRatio" type="range" min="0.2" max="0.65" step="0.01" />
+          </label>
+
+          <label class="field">
+            <span>국가 수 <output for="states" id="statesOut"></output></span>
+            <input id="states" name="states" type="range" min="1" max="14" step="1" />
+          </label>
+
+          <label class="field">
+            <span>국가당 도시 <output for="citiesPerState" id="citiesPerStateOut"></output></span>
+            <input id="citiesPerState" name="citiesPerState" type="range" min="0" max="10" step="1" />
+          </label>
+
+          <label class="field">
+            <span>기후 <output for="temperatureShift" id="temperatureShiftOut"></output></span>
+            <input id="temperatureShift" name="temperatureShift" type="range" min="-0.3" max="0.3" step="0.02" />
+          </label>
+
+          <label class="field">
+            <span>정밀도(셀 수) <output for="cells" id="cellsOut"></output></span>
+            <input id="cells" name="cells" type="range" min="3000" max="20000" step="1000" />
+          </label>
+
+          <button type="submit" class="primary">지도 생성</button>
+        </form>
+
+        <fieldset class="layers">
+          <legend>레이어</legend>
+          <label><input type="checkbox" data-layer="relief" /> 고도 음영</label>
+          <label><input type="checkbox" data-layer="rivers" /> 강</label>
+          <label><input type="checkbox" data-layer="borders" /> 국경</label>
+          <label><input type="checkbox" data-layer="stateTint" /> 국가 색</label>
+          <label><input type="checkbox" data-layer="roads" /> 도로</label>
+          <label><input type="checkbox" data-layer="cities" /> 도시</label>
+          <label><input type="checkbox" data-layer="labels" /> 지명</label>
+        </fieldset>
+
+        <div class="row export">
+          <button type="button" id="exportPng">PNG 저장</button>
+          <button type="button" id="exportJson">JSON 저장</button>
+          <button type="button" id="copyLink">링크 복사</button>
+        </div>
+
+        <section class="info" aria-live="polite">
+          <h2>정보</h2>
+          <dl id="cellInfo"><dt>안내</dt><dd>지도 위에 마우스를 올려 보세요.</dd></dl>
+          <p id="status" class="status"></p>
+        </section>
+      </aside>
+
+      <main class="stage">
+        <canvas id="map" width="1200" height="800" aria-label="생성된 판타지 지도"></canvas>
+        <section class="legend" id="legend" aria-label="국가 목록"></section>
+      </main>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

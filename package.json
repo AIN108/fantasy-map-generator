@@ -1,0 +1,26 @@
+{
+  "name": "fantasy-map-generator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "시드 기반 절차적 판타지 지도 생성기 (지형·강·기후·국가·도로·지명)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "node --test \"test/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "d3-delaunay": "6.0.4"
+  },
+  "devDependencies": {
+    "@types/d3-delaunay": "6.0.4",
+    "@types/node": "22.20.5",
+    "typescript": "6.0.3",
+    "vite": "8.3.4"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}
