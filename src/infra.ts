@@ -8,11 +8,15 @@ import { distance, forEachNeighbor, type Mesh } from "./mesh.ts";
  * 사용자가 그리고 놓는 기반 시설: 도로·철도(셀 경로), 항구, 시설물(점).
  * 도시·국경과 별개로 저장하며, 지형이 바뀌어 물에 잠긴 부분은 그리지 않는다 (데이터는 남겨 둔다).
  */
-export type FacilityKind = "castle" | "fort" | "temple" | "mine" | "tower" | "ruin" | "lighthouse";
+export type FacilityKind =
+  | "castle" | "fort" | "base" | "airport" | "temple" | "mine" | "tower" | "ruin" | "lighthouse";
 
-export const FACILITY_INFO: Record<FacilityKind, { ko: string; coastal?: boolean }> = {
+/** coastal: 해안 전용, maxElevation: 이 고도(상대값) 이하 평지에만 (공항 활주로) */
+export const FACILITY_INFO: Record<FacilityKind, { ko: string; coastal?: boolean; maxElevation?: number }> = {
   castle: { ko: "성" },
   fort: { ko: "요새" },
+  base: { ko: "기지" },
+  airport: { ko: "공항", maxElevation: 0.35 },
   temple: { ko: "사원" },
   mine: { ko: "광산" },
   tower: { ko: "탑" },
@@ -338,6 +342,38 @@ export function moveSpan(
   return null;
 }
 
+/**
+ * 다리·터널의 용도를 바꾼다 (도로용 ↔ 철도용). 같은 자리에 바꿀 용도의 것이 이미 있으면 거부.
+ * 그 다리·터널을 지나던 원래 용도의 경로는 다른 길로 다시 계산해 보고, 길이 없으면 그대로 두어
+ * (끊겨 그려진다) result.broken에 센다. 바뀐 뒤의 용도를 돌려주는 대신 오류가 없으면 null.
+ */
+export function toggleSpanMode(
+  t: Terrain, infra: Infra, kind: "bridge" | "tunnel", index: number,
+  result: { rerouted: number; broken: number } = { rerouted: 0, broken: 0 },
+): EditResult {
+  const list = kind === "bridge" ? infra.bridges : infra.tunnels;
+  const span = list[index];
+  if (!span) return `${kind === "bridge" ? "다리" : "터널"}를 찾을 수 없습니다.`;
+  const from = span.mode;
+  const to: SpanMode = from === "road" ? "rail" : "road";
+  const label = kind === "bridge" ? "다리" : "터널";
+  if (list.some((s, i) => i !== index && s.mode === to && ((s.a === span.a && s.b === span.b) || (s.a === span.b && s.b === span.a)))) {
+    return `같은 자리에 이미 ${SPAN_MODE_KO[to]} ${label}가 있습니다.`;
+  }
+  span.mode = to;
+  const paths = from === "road" ? infra.roads : infra.rails;
+  if (!paths) return null; // 자동 도로는 다시 계산할 때 알아서 반영된다
+  const links = spanLinks(t, infra, from);
+  for (let k = 0; k < paths.length; k++) {
+    const p = paths[k];
+    const used = p.some((c, i) => i > 0 && ((p[i - 1] === span.a && c === span.b) || (p[i - 1] === span.b && c === span.a)));
+    if (!used) continue;
+    const next = routePath(t, p[0], p[p.length - 1], from, links);
+    if (next && next.length >= 2) { paths[k] = next; result.rerouted++; } else result.broken++;
+  }
+  return null;
+}
+
 /** a에서 b까지 곧은 선이 지나는 셀들 (양 끝 제외, 대략 셀 간격 절반마다 표본) */
 export function spanCells(mesh: Mesh, a: number, b: number): number[] {
   const len = distance(mesh, a, b);
@@ -392,8 +428,11 @@ export function movePoint(
   if (!item) return "시설을 찾을 수 없습니다.";
   if (item.cell === cell) return null;
   if (!onLand(t, cell)) return "바다나 호수로는 옮길 수 없습니다.";
-  const coastalOnly = kind === "port" || FACILITY_INFO[(item as Facility).kind]?.coastal;
-  if (coastalOnly && !isCoast(t, cell)) return `${kind === "port" ? "항구" : "등대"}는 해안으로만 옮길 수 있습니다.`;
+  if (kind === "port" && !isCoast(t, cell)) return "항구는 해안으로만 옮길 수 있습니다.";
+  if (kind === "facility") {
+    const siteError = facilitySiteError(t, (item as Facility).kind, cell);
+    if (siteError) return siteError.replace("둘 수 있습니다", "옮길 수 있습니다");
+  }
   const taken = infra.ports.some((p, i) => p.cell === cell && !(kind === "port" && i === index))
     || infra.facilities.some((f, i) => f.cell === cell && !(kind === "facility" && i === index));
   if (taken) return "그 자리에는 이미 시설이 있습니다.";
@@ -485,10 +524,21 @@ export function addPort(t: Terrain, infra: Infra, cell: number, name?: string): 
   return null;
 }
 
-export function addFacility(t: Terrain, infra: Infra, cell: number, kind: FacilityKind, name?: string): EditResult {
-  if (!FACILITY_INFO[kind]) return "알 수 없는 시설 종류입니다.";
+/** 시설물 자리 조건 (놓기·옮기기 공용): 육지, 해안 전용, 평지 전용 */
+function facilitySiteError(t: Terrain, kind: FacilityKind, cell: number): EditResult {
+  const info = FACILITY_INFO[kind];
+  if (!info) return "알 수 없는 시설 종류입니다.";
   if (!onLand(t, cell)) return "시설물은 육지에 둡니다.";
-  if (FACILITY_INFO[kind].coastal && !isCoast(t, cell)) return `${FACILITY_INFO[kind].ko}는 해안에만 둘 수 있습니다.`;
+  if (info.coastal && !isCoast(t, cell)) return `${info.ko}는 해안에만 둘 수 있습니다.`;
+  if (info.maxElevation !== undefined && t.elevation[cell] > info.maxElevation) {
+    return `${info.ko}은 활주로를 낼 평지(낮은 땅)에만 둘 수 있습니다.`;
+  }
+  return null;
+}
+
+export function addFacility(t: Terrain, infra: Infra, cell: number, kind: FacilityKind, name?: string): EditResult {
+  const siteError = facilitySiteError(t, kind, cell);
+  if (siteError) return siteError;
   if (occupied(infra, cell)) return "그 자리에는 이미 시설이 있습니다.";
   if (infra.facilities.length >= MAX_POINTS) return `시설물은 ${MAX_POINTS}개까지 둘 수 있습니다.`;
   infra.facilities.push({ cell, kind, name: cleanName(name) });

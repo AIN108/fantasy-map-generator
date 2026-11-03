@@ -6,7 +6,7 @@ import {
   applyBrush, BRUSH_TOOLS, decodeElevation, EditHistory, encodeElevation, type Brush, type BrushTool,
 } from "./editor.ts";
 import {
-  addFacility, addPath, addPort, addSeaRoute, addSpan, cloneInfra, hitSpan, MAX_SPAN_LENGTH, moveSpan, spanLinks,
+  addFacility, addPath, addPort, addSeaRoute, addSpan, cloneInfra, toggleSpanMode, hitSpan, MAX_SPAN_LENGTH, moveSpan, spanLinks,
   SPAN_MODE_KO, type SpanMode, type SpanPart, emptyInfra, eraseAt, FACILITY_INFO, hitPoint, infraFromJSON,
   infraToJSON, isEmptyInfra, movePoint, routePath, routeSea, type FacilityKind, type Infra, type PointKind,
 } from "./infra.ts";
@@ -88,7 +88,7 @@ const copySnapshot = (s: Snapshot): Snapshot => ({
 const editHistory = new EditHistory<Snapshot>(50, copySnapshot);
 
 type EditTarget = "terrain" | "city" | "border" | "infra";
-type InfraTool = "road" | "rail" | "sea" | "bridge" | "tunnel" | "port" | "facility" | "move" | "erase";
+type InfraTool = "road" | "rail" | "sea" | "bridge" | "tunnel" | "port" | "facility" | "move" | "toggleMode" | "erase";
 const INFRA_TOOL_HINTS: Record<InfraTool, string> = {
   road: "출발점에서 도착점까지 끌어 놓으면 지형을 따라 도로가 생깁니다. 도시 근처에서 놓으면 도시에 붙고, 직접 놓은 다리·터널도 길로 씁니다.",
   rail: "출발점에서 도착점까지 끌어 놓으면 철도가 생깁니다. 철도는 급경사를 피해 산을 크게 돌아갑니다.",
@@ -96,7 +96,8 @@ const INFRA_TOOL_HINTS: Record<InfraTool, string> = {
   bridge: `육지에서 물 건너편 육지까지 끌어 놓으면 곧은 다리가 놓입니다 (강·호수·해협, ${MAX_SPAN_LENGTH}px까지). 도로는 도로용, 철도는 철도용 다리만 건넙니다.`,
   tunnel: `두 육지 지점 사이를 끌어 놓으면 곧은 터널이 놓입니다. 산을 관통하거나 바다 밑으로 지날 수 있습니다 (${MAX_SPAN_LENGTH}px까지). 도로는 도로용, 철도는 철도용 터널만 지납니다.`,
   port: "바다에 닿은 해안을 누르면 항구가 생깁니다.",
-  facility: "고른 종류의 시설물을 누른 자리에 둡니다. 등대는 해안에만 둘 수 있습니다.",
+  facility: "고른 종류의 시설물을 누른 자리에 둡니다. 등대는 해안에만, 공항은 평지에만 둘 수 있습니다.",
+  toggleMode: "다리·터널을 누르면 도로용 ↔ 철도용이 바뀝니다. 그 위를 지나던 원래 용도의 길은 다른 길로 다시 이어 봅니다.",
   move: "항구·시설물·다리·터널을 끌어 옮깁니다. 다리·터널은 끝점을 끌면 그 끝만, 가운데를 끌면 통째로 옮겨지고, 지나던 도로·철도가 따라갑니다. 항구를 옮기면 이어진 항로도 다시 계산합니다.",
   erase: "누른 곳에서 가장 가까운 시설을 지웁니다. 자동 다리·터널 표기를 누르면 그 표기만 숨깁니다.",
 };
@@ -570,6 +571,19 @@ function drawInfraCursor(x: number, y: number): void {
     else strokeCircle(x, y, 6, [3, 3]);
     return;
   }
+  if (infraTool === "toggleMode") {
+    const span = hitSpan(mesh, infra, x, y, hitRadius());
+    if (span) {
+      const sp = (span.kind === "bridge" ? infra.bridges : infra.tunnels)[span.index];
+      o.lineWidth = 7;
+      o.strokeStyle = "rgba(255,255,255,0.55)";
+      o.beginPath();
+      o.moveTo(mesh.x[sp.a], mesh.y[sp.a]);
+      o.lineTo(mesh.x[sp.b], mesh.y[sp.b]);
+      o.stroke();
+    } else strokeCircle(x, y, 6, [3, 3]);
+    return;
+  }
   if (infraTool === "move") {
     if (draggingSpan) {
       const cells = movedSpanCells(x, y);
@@ -734,6 +748,22 @@ function handleInfraClick(x: number, y: number): void {
   } else if (infraTool === "facility") {
     const kind = $<HTMLSelectElement>("facilityKind").value as FacilityKind;
     applyInfraEdit((inf) => addFacility(world!, inf, cell, kind, takeFeatureName()), `${FACILITY_INFO[kind]?.ko ?? "시설"}${eul(FACILITY_INFO[kind]?.ko ?? "시설")} 놓았습니다.`);
+  } else if (infraTool === "toggleMode") {
+    const hit = hitSpan(mesh, infra, x, y, hitRadius());
+    if (!hit) { setStatus("용도를 바꿀 다리·터널을 눌러 주세요.", true); return; }
+    const span = (hit.kind === "bridge" ? infra.bridges : infra.tunnels)[hit.index];
+    const label = hit.kind === "bridge" ? "다리" : "터널";
+    const before = SPAN_MODE_KO[span.mode];
+    const result = { rerouted: 0, broken: 0 };
+    const ok = applyInfraEdit((inf) => toggleSpanMode(world!, inf, hit.kind, hit.index, result));
+    if (ok) {
+      const after = before === "도로" ? "철도" : "도로";
+      const notes = [
+        result.rerouted > 0 ? `지나던 ${before} ${result.rerouted}개는 다른 길로 다시 이었습니다.` : "",
+        result.broken > 0 ? `${before} ${result.broken}개는 다른 길이 없어 끊겨 그려집니다.` : "",
+      ].filter(Boolean).join(" ");
+      setStatus(`${before}용 ${label}${eul(label)} ${after}용으로 바꿨습니다.${notes ? ` ${notes}` : ""}`);
+    }
   } else if (infraTool === "erase") {
     let removed: string | null = null;
     applyInfraEdit((inf) => {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { applyBrush } from "../src/editor.ts";
 import {
-  addFacility, addPath, addPort, addSeaRoute, addSpan, cloneInfra, connected, hitSpan, MAX_SPAN_LENGTH, moveSpan,
+  addFacility, addPath, addPort, addSeaRoute, addSpan, cloneInfra, toggleSpanMode, connected, hitSpan, MAX_SPAN_LENGTH, moveSpan,
   spanCells, spanLinks, emptyInfra, eraseAt, hitPoint, infraFromJSON, infraToJSON,
   isEmptyInfra, movePoint, pathMarks, routePath, routeSea, TUNNEL_ELEVATION, visibleInfra, type Infra,
 } from "../src/infra.ts";
@@ -672,5 +672,108 @@ describe("다리를 옮기면 길이 따라간다", () => {
     addSpan(aw, infra, "bridge", ia, ib, "rail");
     const mx = (am.x[ia] + am.x[ib]) / 2, my = (am.y[ia] + am.y[ib]) / 2;
     assert.equal(eraseAt(am, infra, mx, my, 8, [], aw), "철도 다리");
+  });
+});
+
+describe("다리·터널 용도 전환", () => {
+  const AO: WorldOptions = { ...DEFAULT_OPTIONS, seed: "다리섬", cells: 4000, width: 1000, height: 700, shape: "archipelago" };
+  const am = createMesh(AO);
+  const aw = deriveWorld(AO, am, createElevation(am, AO));
+  const aLand = (i: number): boolean => aw.elevation[i] > 0 && !aw.hydro.isLake[i];
+  const comp = new Int32Array(am.count).fill(-1);
+  let n = 0;
+  for (let s0 = 0; s0 < am.count; s0++) {
+    if (!aLand(s0) || comp[s0] >= 0) continue;
+    const q = [s0];
+    comp[s0] = n;
+    while (q.length) {
+      const i = q.pop()!;
+      forEachNeighbor(am, i, (j) => { if (aLand(j) && comp[j] < 0) { comp[j] = n; q.push(j); } });
+    }
+    n++;
+  }
+  let pair: [number, number] | undefined;
+  for (let a = 0; a < am.count && !pair; a++) {
+    if (!aLand(a)) continue;
+    for (let b = 0; b < am.count; b++) {
+      const d = Math.hypot(am.x[a] - am.x[b], am.y[a] - am.y[b]);
+      if (aLand(b) && comp[a] !== comp[b] && d > 40 && d < 120) { pair = [a, b]; break; }
+    }
+  }
+  const [ia, ib] = pair!;
+  const far = (c: number): number => Array.from({ length: am.count }, (_, i) => i).filter((i) => comp[i] === comp[c] && i !== c)
+    .sort((x, y) => Math.hypot(am.x[y] - am.x[c], am.y[y] - am.y[c]) - Math.hypot(am.x[x] - am.x[c], am.y[x] - am.y[c]))[0];
+  const start = far(ia), goal = far(ib);
+
+  test("도로용 다리를 철도용으로 바꾸면 철도가 건너고 도로는 못 건넌다", () => {
+    const infra: Infra = { ...emptyInfra(), roads: [] };
+    addSpan(aw, infra, "bridge", ia, ib, "road");
+    const road = routePath(aw, start, goal, "road", spanLinks(aw, infra, "road"))!;
+    addPath(infra, "road", road, []);
+    const result = { rerouted: 0, broken: 0 };
+    assert.equal(toggleSpanMode(aw, infra, "bridge", 0, result), null);
+    assert.equal(infra.bridges[0].mode, "rail");
+    assert.deepEqual(result, { rerouted: 0, broken: 1 }, "다른 길이 없는 도로는 끊김으로 센다");
+    assert.ok(routePath(aw, start, goal, "rail", spanLinks(aw, infra, "rail")));
+    assert.equal(routePath(aw, start, goal, "road", spanLinks(aw, infra, "road")), null);
+    // 다시 바꾸면 원래대로
+    assert.equal(toggleSpanMode(aw, infra, "bridge", 0), null);
+    assert.equal(infra.bridges[0].mode, "road");
+  });
+
+  test("같은 자리에 바꿀 용도의 것이 이미 있으면 거부한다", () => {
+    const infra = emptyInfra();
+    addSpan(aw, infra, "bridge", ia, ib, "road");
+    addSpan(aw, infra, "bridge", ia, ib, "rail");
+    assert.match(toggleSpanMode(aw, infra, "bridge", 0)!, /이미 철도 다리/);
+    assert.match(toggleSpanMode(aw, infra, "tunnel", 0)!, /찾을 수 없/);
+  });
+
+  test("다른 길이 있으면 지나던 경로를 그 길로 다시 잇는다", () => {
+    const infra: Infra = { ...emptyInfra(), roads: [] };
+    addSpan(aw, infra, "bridge", ia, ib, "road");
+    // 같은 두 섬을 잇는 두 번째 도로용 다리
+    let second: [number, number] | undefined;
+    for (let a = 0; a < am.count && !second; a++) {
+      if (comp[a] !== comp[ia] || a === ia) continue;
+      for (let b = 0; b < am.count; b++) {
+        if (comp[b] !== comp[ib] || b === ib) continue;
+        const d = Math.hypot(am.x[a] - am.x[b], am.y[a] - am.y[b]);
+        if (d > 40 && d < 200 && addSpan(aw, { ...emptyInfra() }, "bridge", a, b, "road") === null) { second = [a, b]; break; }
+      }
+    }
+    assert.ok(second, "두 번째 다리 자리를 찾지 못함 (테스트 전제)");
+    addSpan(aw, infra, "bridge", second[0], second[1], "road");
+    const road = routePath(aw, start, goal, "road", spanLinks(aw, infra, "road"))!;
+    addPath(infra, "road", road, []);
+    const usedIndex = infra.bridges.findIndex((b) => road.some((c, k) => k > 0 && ((road[k - 1] === b.a && c === b.b) || (road[k - 1] === b.b && c === b.a))));
+    const result = { rerouted: 0, broken: 0 };
+    assert.equal(toggleSpanMode(aw, infra, "bridge", usedIndex, result), null);
+    assert.deepEqual(result, { rerouted: 1, broken: 0 });
+    const other = infra.bridges[1 - usedIndex];
+    const next = infra.roads![0];
+    assert.ok(next.some((c, k) => k > 0 && ((next[k - 1] === other.a && c === other.b) || (next[k - 1] === other.b && c === other.a))));
+  });
+});
+
+describe("공항·기지", () => {
+  test("공항은 평지에만, 기지는 육지 어디든 둘 수 있다", () => {
+    const infra = emptyInfra();
+    const flat = Array.from({ length: mesh.count }, (_, i) => i).find((i) => land(i) && elevation[i] < 0.2)!;
+    const high = Array.from({ length: mesh.count }, (_, i) => i).find((i) => land(i) && elevation[i] > 0.5)!;
+    assert.equal(addFacility(world, infra, flat, "airport", "하늘항"), null);
+    assert.match(addFacility(world, infra, high, "airport")!, /평지/);
+    assert.equal(addFacility(world, infra, high, "base", "북부기지"), null);
+    assert.match(addFacility(world, infra, ocean, "base")!, /육지/);
+    // 공항을 산으로 옮기는 것도 거부
+    assert.match(movePoint(world, infra, "facility", 0, Array.from({ length: mesh.count }, (_, i) => i).find((i) => land(i) && elevation[i] > 0.5 && i !== high)!)!, /평지/);
+  });
+
+  test("공항·기지도 저장·불러오기 된다", () => {
+    const infra = emptyInfra();
+    const flat = Array.from({ length: mesh.count }, (_, i) => i).find((i) => land(i) && elevation[i] < 0.2)!;
+    addFacility(world, infra, flat, "airport");
+    const back = infraFromJSON(JSON.parse(JSON.stringify(infraToJSON(infra))), mesh.count)!;
+    assert.equal(back.facilities[0].kind, "airport");
   });
 });

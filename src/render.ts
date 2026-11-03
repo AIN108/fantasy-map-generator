@@ -651,6 +651,23 @@ export function drawFacilityIcon(ctx: CanvasRenderingContext2D, kind: FacilityKi
       ctx.moveTo(-4.5, 4); ctx.lineTo(4.5, 4);
       ctx.stroke();
       break;
+    case "airport": // 비행기 (위에서 본 모습)
+      ctx.moveTo(0, -5); ctx.lineTo(0.9, -1.5); ctx.lineTo(5, 0.5); ctx.lineTo(5, 1.6); ctx.lineTo(0.9, 0.6);
+      ctx.lineTo(0.7, 3.2); ctx.lineTo(2.2, 4.3); ctx.lineTo(2.2, 5); ctx.lineTo(0, 4.3); ctx.lineTo(-2.2, 5);
+      ctx.lineTo(-2.2, 4.3); ctx.lineTo(-0.7, 3.2); ctx.lineTo(-0.9, 0.6); ctx.lineTo(-5, 1.6); ctx.lineTo(-5, 0.5);
+      ctx.lineTo(-0.9, -1.5); ctx.closePath();
+      ctx.fill();
+      break;
+    case "base": // 깃대와 깃발
+      ctx.moveTo(-2.5, 5); ctx.lineTo(-2.5, -5);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-2.2, -5); ctx.lineTo(4.5, -3); ctx.lineTo(-2.2, -1); ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-4.5, 5); ctx.lineTo(0.5, 5);
+      ctx.stroke();
+      break;
     case "lighthouse": // 등대와 빛
       ctx.moveTo(-1.6, 4); ctx.lineTo(-1, -2); ctx.lineTo(1, -2); ctx.lineTo(1.6, 4); ctx.closePath();
       ctx.fill();
