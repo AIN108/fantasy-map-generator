@@ -10,6 +10,7 @@ import { buildMesh, type Mesh } from "./mesh.ts";
 import { NameGenerator, type NameStyle } from "./names.ts";
 import { cellHash, subRng } from "./rng.ts";
 import { civFromJSON, civToJSON, type CivState } from "./civedit.ts";
+import { infraFromJSON, infraToJSON, isEmptyInfra, visibleInfra, type Facility, type Infra, type PointFeature } from "./infra.ts";
 import { generateElevation } from "./terrain.ts";
 
 export interface WorldOptions {
@@ -66,6 +67,10 @@ export interface WorldMap {
   states: State[];
   cities: City[];
   roads: number[][];
+  /** 사용자가 그린 철도와 놓은 항구·시설물 (applyInfra로 채운다) */
+  rails: number[][];
+  ports: PointFeature[];
+  facilities: Facility[];
   peaks: Peak[];
 }
 
@@ -142,6 +147,7 @@ export function deriveWorld(
     return {
       options, mesh, elevation, temperature, moisture, biome, hydro, rivers,
       owner: new Int32Array(mesh.count).fill(-1), states: [], cities: [], roads: [], peaks: [],
+      rails: [], ports: [], facilities: [],
     };
   }
 
@@ -217,7 +223,10 @@ export function deriveWorld(
 
   const peaks: Peak[] = peakCells.map((cell) => ({ cell, name: inherit?.peaks.get(cell) ?? names.next("mountain") }));
 
-  return { options, mesh, elevation, temperature, moisture, biome, hydro, rivers, owner, states, cities, roads, peaks };
+  return {
+    options, mesh, elevation, temperature, moisture, biome, hydro, rivers, owner, states, cities, roads, peaks,
+    rails: [], ports: [], facilities: [],
+  };
 }
 
 /**
@@ -283,7 +292,7 @@ function deriveEditedCiv(
 
   return {
     options, mesh, elevation, temperature: rest.temperature, moisture: rest.moisture, biome, hydro,
-    rivers: rest.rivers, owner, states, cities, roads, peaks,
+    rivers: rest.rivers, owner, states, cities, roads, peaks, rails: [], ports: [], facilities: [],
   };
 }
 
@@ -428,7 +437,7 @@ export function sanitizeAnchors(data: unknown): NameAnchors | undefined {
 }
 
 /** 다른 프로젝트(TRPG·경제 시뮬레이터 등)에서 불러 쓰기 위한 JSON 내보내기 */
-export function toJSON(world: WorldMap, civ?: CivState): object {
+export function toJSON(world: WorldMap, civ?: CivState, infra?: Infra): object {
   const { mesh } = world;
   const round = (v: number): number => Math.round(v * 1000) / 1000;
   return {
@@ -452,7 +461,21 @@ export function toJSON(world: WorldMap, civ?: CivState): object {
     peaks: world.peaks,
     // 문명을 직접 편집한 지도면 편집 내용(지명 스타일별 이름 포함)을 함께 저장한다.
     ...(civ ? { civ: civToJSON(civ) } : {}),
+    // 그린 철도·항구·시설물(과 고정한 도로)
+    ...(infra && !isEmptyInfra(infra) ? { infra: infraToJSON(infra) } : {}),
+    rails: world.rails,
+    ports: world.ports,
+    facilities: world.facilities,
   };
+}
+
+/**
+ * 계산한 지도에 사용자가 그린 기반 시설을 반영한다 (물에 잠긴 부분은 빼고 그린다).
+ * 도로를 고정했다면 자동 도로 대신 고정한 도로를 쓴다.
+ */
+export function applyInfra(world: WorldMap, infra: Infra): WorldMap {
+  const v = visibleInfra(world, infra, world.roads);
+  return { ...world, roads: v.roads, rails: v.rails, ports: v.ports, facilities: v.facilities };
 }
 
 /**
@@ -461,7 +484,9 @@ export function toJSON(world: WorldMap, civ?: CivState): object {
  */
 export function parseMapJSON(
   data: unknown,
-): { options: WorldOptions; elevation: Float64Array; mesh: Mesh; anchors?: NameAnchors; civ?: CivState } {
+): {
+  options: WorldOptions; elevation: Float64Array; mesh: Mesh; anchors?: NameAnchors; civ?: CivState; infra?: Infra;
+} {
   const fail = (msg: string): never => { throw new Error(`지도 파일을 읽을 수 없습니다: ${msg}`); };
   if (typeof data !== "object" || data === null) fail("JSON 객체가 아닙니다.");
   const obj = data as Record<string, unknown>;
@@ -499,7 +524,12 @@ export function parseMapJSON(
     civ = civFromJSON(obj.civ, mesh.count);
     if (!civ) fail("편집한 문명(civ) 정보가 올바르지 않습니다.");
   }
-  return { options, elevation, mesh, anchors, civ };
+  let infra: Infra | undefined;
+  if (obj.infra !== undefined) {
+    infra = infraFromJSON(obj.infra, mesh.count);
+    if (!infra) fail("도로·철도·시설(infra) 정보가 올바르지 않습니다.");
+  }
+  return { options, elevation, mesh, anchors, civ, infra };
 }
 
 /**

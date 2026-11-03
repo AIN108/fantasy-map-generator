@@ -139,7 +139,7 @@ canvas {
 .editor .row button { flex: 1; font-size: 12.5px; padding: 6px 4px; }
 .editor .row + .row { margin-top: 6px; }
 .editor .tabs { display: flex; gap: 4px; margin: 4px 0 8px; }
-.editor .tabs button { flex: 1; padding: 5px 4px; font-size: 13px; }
+.editor .tabs button { flex: 1; padding: 5px 2px; font-size: 13px; }
 .editor .tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
 .editor .wide { width: 100%; font-size: 12.5px; }
 .editor select { margin-bottom: 6px; }

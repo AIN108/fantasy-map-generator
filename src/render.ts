@@ -1,4 +1,5 @@
 import { BIOME_INFO } from "./climate.ts";
+import { FACILITY_INFO, type FacilityKind } from "./infra.ts";
 import { forEachNeighbor, type Mesh } from "./mesh.ts";
 import type { WorldMap } from "./world.ts";
 
@@ -8,12 +9,15 @@ export interface Layers {
   borders: boolean;
   stateTint: boolean;
   roads: boolean;
+  rails: boolean;
+  facilities: boolean;
   cities: boolean;
   labels: boolean;
 }
 
 export const DEFAULT_LAYERS: Layers = {
-  relief: true, rivers: true, borders: true, stateTint: false, roads: true, cities: true, labels: true,
+  relief: true, rivers: true, borders: true, stateTint: false, roads: true, rails: true, facilities: true,
+  cities: true, labels: true,
 };
 
 const LABEL_FONT = '"Noto Serif KR", "Noto Serif", Georgia, serif';
@@ -286,7 +290,37 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
     ctx.setLineDash([]);
   }
 
+  // 6-1) 철도: 검은 선 위에 흰 점선 (지도에서 흔히 쓰는 철도 표기)
+  if (layers.rails && world.rails.length > 0) {
+    ctx.lineCap = "butt";
+    for (const rail of world.rails) {
+      smoothPath(ctx, mesh, rail);
+      ctx.strokeStyle = "#2b2b2b";
+      ctx.lineWidth = 2.6;
+      ctx.stroke();
+      ctx.strokeStyle = "#f4f1ea";
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([5, 5]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
   const placer = new LabelPlacer(ctx, mesh.width, mesh.height);
+
+  // 6-2) 항구·시설물 아이콘
+  if (layers.facilities) {
+    for (const port of world.ports) {
+      const x = mesh.x[port.cell], y = mesh.y[port.cell];
+      drawFacilityIcon(ctx, "port", x, y);
+      placer.reserve({ x: x - 7, y: y - 7, w: 14, h: 14 });
+    }
+    for (const f of world.facilities) {
+      const x = mesh.x[f.cell], y = mesh.y[f.cell];
+      drawFacilityIcon(ctx, f.kind, x, y);
+      placer.reserve({ x: x - 7, y: y - 7, w: 14, h: 14 });
+    }
+  }
 
   // 7) 도시 표시
   if (layers.cities) {
@@ -325,6 +359,17 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
         placer.place(c.name, font, [[x + 7, y + 4, "left"], [x - 7, y + 4, "right"], [x, y - 8, "center"], [x, y + 16, "center"]], "#1e1e1e");
       }
     }
+    // 이름 붙인 항구·시설물
+    if (layers.facilities) {
+      for (const f of [...world.ports, ...world.facilities]) {
+        if (!f.name) continue;
+        const x = mesh.x[f.cell], y = mesh.y[f.cell];
+        placer.place(f.name, `500 11px ${LABEL_FONT}`, [
+          [x + 9, y + 4, "left"], [x - 9, y + 4, "right"], [x, y - 10, "center"], [x, y + 19, "center"],
+          [x + 9, y - 6, "left"], [x - 9, y - 6, "right"], [x + 9, y + 15, "left"], [x - 9, y + 15, "right"],
+        ], "#3a2f25");
+      }
+    }
     // 강 이름: 강의 중간 지점
     if (layers.rivers) {
       for (const r of world.rivers) {
@@ -358,5 +403,85 @@ export function describeCell(world: WorldMap, i: number): Record<string, string>
   }
   const city = world.cities.find((c) => c.cell === i);
   if (city) info["도시"] = city.capital ? `${city.name} (수도)` : city.name;
+  const port = world.ports.find((p) => p.cell === i);
+  if (port) info["항구"] = port.name ?? "이름 없음";
+  const fac = world.facilities.find((f) => f.cell === i);
+  if (fac) info["시설"] = fac.name ? `${FACILITY_INFO[fac.kind].ko} · ${fac.name}` : FACILITY_INFO[fac.kind].ko;
   return info;
+}
+
+/**
+ * 시설 아이콘 (지름 약 12px). 글꼴마다 모양이 다른 이모지 대신 직접 그린다.
+ * 흰 바탕 원 위에 어두운 기호를 올려 어떤 지형 색 위에서도 보이게 한다.
+ */
+export function drawFacilityIcon(ctx: CanvasRenderingContext2D, kind: FacilityKind | "port", x: number, y: number): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  ctx.arc(0, 0, 6.5, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255,255,255,0.92)";
+  ctx.strokeStyle = "#2b2b2b";
+  ctx.lineWidth = 1;
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#2b2b2b";
+  ctx.strokeStyle = "#2b2b2b";
+  ctx.lineWidth = 1.3;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  switch (kind) {
+    case "port": // 닻
+      ctx.moveTo(0, -4); ctx.lineTo(0, 4);
+      ctx.moveTo(-2.5, -2); ctx.lineTo(2.5, -2);
+      ctx.moveTo(-3.5, 1.5); ctx.quadraticCurveTo(0, 6, 3.5, 1.5);
+      ctx.stroke();
+      break;
+    case "castle": // 성벽 (총안)
+      ctx.moveTo(-4, 4); ctx.lineTo(-4, -3); ctx.lineTo(-2.5, -3); ctx.lineTo(-2.5, -1.5); ctx.lineTo(-0.8, -1.5);
+      ctx.lineTo(-0.8, -3); ctx.lineTo(0.8, -3); ctx.lineTo(0.8, -1.5); ctx.lineTo(2.5, -1.5); ctx.lineTo(2.5, -3);
+      ctx.lineTo(4, -3); ctx.lineTo(4, 4); ctx.closePath();
+      ctx.fill();
+      break;
+    case "fort": // 별 모양 성채
+      for (let k = 0; k < 10; k++) {
+        const r = k % 2 ? 2 : 4.6;
+        const a = (k / 10) * Math.PI * 2 - Math.PI / 2;
+        if (k === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r); else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+      }
+      ctx.closePath();
+      ctx.fill();
+      break;
+    case "temple": // 지붕과 기둥
+      ctx.moveTo(-4.5, -1); ctx.lineTo(0, -4.5); ctx.lineTo(4.5, -1); ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-3, 0); ctx.lineTo(-3, 3.5); ctx.moveTo(0, 0); ctx.lineTo(0, 3.5); ctx.moveTo(3, 0); ctx.lineTo(3, 3.5);
+      ctx.moveTo(-4.5, 4); ctx.lineTo(4.5, 4);
+      ctx.stroke();
+      break;
+    case "mine": // 엇갈린 곡괭이
+      ctx.moveTo(-3.5, 3.5); ctx.lineTo(3.5, -3.5); ctx.moveTo(3.5, 3.5); ctx.lineTo(-3.5, -3.5);
+      ctx.moveTo(1, -4.5); ctx.lineTo(4.5, -1); ctx.moveTo(-1, -4.5); ctx.lineTo(-4.5, -1);
+      ctx.stroke();
+      break;
+    case "tower": // 가는 탑
+      ctx.moveTo(-1.8, 4); ctx.lineTo(-1.2, -2.5); ctx.lineTo(0, -4.8); ctx.lineTo(1.2, -2.5); ctx.lineTo(1.8, 4); ctx.closePath();
+      ctx.fill();
+      break;
+    case "ruin": // 부러진 기둥
+      ctx.moveTo(-3, 4); ctx.lineTo(-3, -3); ctx.moveTo(0, 4); ctx.lineTo(0, 0.5); ctx.moveTo(3, 4); ctx.lineTo(3, -1.5);
+      ctx.moveTo(-4.5, 4); ctx.lineTo(4.5, 4);
+      ctx.stroke();
+      break;
+    case "lighthouse": // 등대와 빛
+      ctx.moveTo(-1.6, 4); ctx.lineTo(-1, -2); ctx.lineTo(1, -2); ctx.lineTo(1.6, 4); ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-1.5, -3.2); ctx.lineTo(1.5, -3.2);
+      ctx.moveTo(-2.5, -4.5); ctx.lineTo(-4.3, -5.3); ctx.moveTo(2.5, -4.5); ctx.lineTo(4.3, -5.3);
+      ctx.stroke();
+      break;
+  }
+  ctx.restore();
 }

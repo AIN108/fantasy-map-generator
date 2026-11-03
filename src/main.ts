@@ -5,11 +5,15 @@ import {
 import {
   applyBrush, BRUSH_TOOLS, decodeElevation, EditHistory, encodeElevation, type Brush, type BrushTool,
 } from "./editor.ts";
+import {
+  addFacility, addPath, addPort, cloneInfra, emptyInfra, eraseAt, FACILITY_INFO, infraFromJSON, infraToJSON,
+  isEmptyInfra, routePath, type FacilityKind, type Infra,
+} from "./infra.ts";
 import { findCell, type Mesh } from "./mesh.ts";
 import type { NameStyle } from "./names.ts";
 import { buildRenderCache, DEFAULT_LAYERS, describeCell, renderWorld, type Layers, type RenderCache } from "./render.ts";
 import {
-  createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors, parseMapJSON,
+  applyInfra, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors, parseMapJSON,
   sanitizeAnchors, terrainKey, toJSON, type NameAnchors, type WorldMap, type WorldOptions,
 } from "./world.ts";
 
@@ -60,6 +64,10 @@ let edited = false;
  * 값이 있으면 자동 배치를 멈추고 이 값을 그대로 쓴다 (도시·국경 도구를 처음 쓸 때 만들어진다).
  */
 let civ: CivState | undefined;
+/** 사용자가 그린 도로·철도와 놓은 항구·시설물 */
+let infra: Infra = emptyInfra();
+/** 자동으로 만든 도로 (도로를 처음 편집할 때 이 값을 고정한다) */
+let autoRoads: number[][] = [];
 /**
  * 지명 스타일별 이름 기억. 다시 계산할 때 같은 자리의 국가·도시·강·봉우리가 이 이름을 물려받는다.
  * 지형 자체가 바뀌면(시드 변경) 비운다.
@@ -70,12 +78,21 @@ let cache: RenderCache | undefined;
 let layers: Layers = { ...DEFAULT_LAYERS };
 
 /** 되돌리기 단위: 지형과 문명을 함께 보관한다. */
-interface Snapshot { elevation: Float64Array; civ?: CivState }
-const editHistory = new EditHistory<Snapshot>(50, (s) => ({
-  elevation: Float64Array.from(s.elevation), civ: s.civ && cloneCiv(s.civ),
-}));
+interface Snapshot { elevation: Float64Array; civ?: CivState; infra: Infra }
+const copySnapshot = (s: Snapshot): Snapshot => ({
+  elevation: Float64Array.from(s.elevation), civ: s.civ && cloneCiv(s.civ), infra: cloneInfra(s.infra),
+});
+const editHistory = new EditHistory<Snapshot>(50, copySnapshot);
 
-type EditTarget = "terrain" | "city" | "border";
+type EditTarget = "terrain" | "city" | "border" | "infra";
+type InfraTool = "road" | "rail" | "port" | "facility" | "erase";
+const INFRA_TOOL_HINTS: Record<InfraTool, string> = {
+  road: "출발점에서 도착점까지 끌어 놓으면 지형을 따라 도로가 생깁니다. 도시 근처에서 놓으면 도시에 붙습니다.",
+  rail: "출발점에서 도착점까지 끌어 놓으면 철도가 생깁니다. 철도는 급경사를 피해 산을 크게 돌아갑니다.",
+  port: "바다에 닿은 해안을 누르면 항구가 생깁니다.",
+  facility: "고른 종류의 시설물을 누른 자리에 둡니다. 등대는 해안에만 둘 수 있습니다.",
+  erase: "누른 곳에서 가장 가까운 항구·시설물·도로·철도를 지웁니다.",
+};
 type CityTool = "move" | "add" | "delete" | "rename" | "capital" | "newState";
 const CITY_TOOL_HINTS: Record<CityTool, string> = {
   move: "도시를 끌어 옮깁니다. 수도를 옮기면 그 자리가 수도의 나라 땅이 됩니다.",
@@ -88,6 +105,7 @@ const CITY_TOOL_HINTS: Record<CityTool, string> = {
 let editMode = false;
 let editTarget: EditTarget = "terrain";
 let cityTool: CityTool = "move";
+let infraTool: InfraTool = "road";
 const brush: Brush = { tool: "raise", radius: 45, strength: 0.5 };
 
 // ── URL 해시 ↔ 옵션 (링크로 같은 지도를 공유) ───────────────────────
@@ -206,6 +224,7 @@ function updateEditButtons(): void {
   $<HTMLButtonElement>("redo").disabled = !editHistory.canRedo;
   $<HTMLButtonElement>("resetEdits").disabled = !edited;
   $<HTMLButtonElement>("resetCiv").disabled = !civ;
+  $<HTMLButtonElement>("resetRoads").disabled = infra.roads === undefined;
 }
 
 /**
@@ -218,8 +237,12 @@ function derive(natureOnly = false): void {
     const t0 = performance.now();
     const prior = nameMemory[options.nameStyle];
     if (civ) ensureCivNames(civ, options.nameStyle, options.seed);
-    world = deriveWorld(options, mesh, elevation, natureOnly, prior, civ);
-    if (!natureOnly) nameMemory[options.nameStyle] = mergeAnchors(extractAnchors(world), prior);
+    const derived = deriveWorld(options, mesh, elevation, natureOnly, prior, civ);
+    if (!natureOnly) {
+      nameMemory[options.nameStyle] = mergeAnchors(extractAnchors(derived), prior);
+      autoRoads = derived.roads;
+    }
+    world = applyInfra(derived, infra);
     cache = buildRenderCache(world);
     if (canvas.width !== options.width || canvas.height !== options.height) {
       canvas.width = overlay.width = options.width;
@@ -230,7 +253,9 @@ function derive(natureOnly = false): void {
     renderLegend(world);
     renderPaintStates(world);
     writeHash(options);
-    const notes = [edited ? "지형 편집됨" : "", civ ? "도시·국경 직접 편집됨" : ""].filter(Boolean);
+    const notes = [
+      edited ? "지형 편집됨" : "", civ ? "도시·국경 직접 편집됨" : "", infra.roads ? "도로 고정됨" : "",
+    ].filter(Boolean);
     const hidden = civ ? civ.cities.length - world.cities.length : 0;
     if (hidden > 0) notes.push(`물에 잠긴 도시 ${hidden}곳 숨김`);
     setStatus(`셀 ${world.mesh.count.toLocaleString("ko-KR")}개 · 국가 ${world.states.length} · 도시 ${world.cities.length} · ${Math.round(performance.now() - t0)}ms${notes.map((n) => ` · ${n}`).join("")}`);
@@ -253,13 +278,15 @@ function commit(): void {
  */
 function generate(
   next: WorldOptions,
-  opts: { restoreFrom?: Float64Array; names?: Partial<Record<NameStyle, NameAnchors>>; civ?: CivState } = {},
+  opts: {
+    restoreFrom?: Float64Array; names?: Partial<Record<NameStyle, NameAnchors>>; civ?: CivState; infra?: Infra;
+  } = {},
 ): void {
   try {
     const nextTerrainKey = terrainKey(next);
     const restoring = !!opts.restoreFrom;
-    if ((edited || civ) && nextTerrainKey !== currentTerrainKey && !restoring) {
-      const ok = confirm("시드·육지 비율·지형·정밀도를 바꾸면 편집한 지형과 도시·국경이 사라집니다. 계속할까요?\n(필요하면 먼저 'JSON 저장'으로 보관하세요.)");
+    if (hasEdits() && nextTerrainKey !== currentTerrainKey && !restoring) {
+      const ok = confirm("시드·육지 비율·지형·정밀도를 바꾸면 편집한 지형·도시·국경·시설이 사라집니다. 계속할까요?\n(필요하면 먼저 'JSON 저장'으로 보관하세요.)");
       if (!ok) {
         fillForm(options);
         return;
@@ -288,6 +315,7 @@ function generate(
       // 새 지형이면 이전 이름 기억·편집 문명은 의미가 없다. 저장본·파일에서 되살리는 경우에만 넘겨받는다.
       nameMemory = opts.names ?? {};
       civ = opts.civ;
+      infra = opts.infra ?? emptyInfra();
     }
     derive();
     saveEdits();
@@ -298,16 +326,18 @@ function generate(
 }
 
 const differs = (a: Float64Array, b: Float64Array): boolean => a.some((v, i) => Math.abs(v - b[i]) > 1e-3);
+const hasEdits = (): boolean => edited || !!civ || !isEmptyInfra(infra);
 
 // ── 편집 내용 브라우저 저장 (이 브라우저에만 남는 편의 기능) ─────────
 function saveEdits(): void {
   try {
-    if ((edited || civ) && elevation) {
+    if (hasEdits() && elevation) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         terrainKey: currentTerrainKey,
         data: encodeElevation(elevation),
         names: nameMemory,
         civ: civ ? civToJSON(civ) : undefined,
+        infra: isEmptyInfra(infra) ? undefined : infraToJSON(infra),
       }));
     } else {
       localStorage.removeItem(STORAGE_KEY);
@@ -321,13 +351,16 @@ interface SavedEdits {
   elevation: Float64Array;
   names: Partial<Record<NameStyle, NameAnchors>>;
   civ?: CivState;
+  infra?: Infra;
 }
 
 function loadSavedEdits(o: WorldOptions): SavedEdits | undefined {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return undefined;
-    const saved = JSON.parse(raw) as { terrainKey?: unknown; data?: unknown; names?: Record<string, unknown>; civ?: unknown };
+    const saved = JSON.parse(raw) as {
+      terrainKey?: unknown; data?: unknown; names?: Record<string, unknown>; civ?: unknown; infra?: unknown;
+    };
     if (saved.terrainKey !== terrainKey(o) || typeof saved.data !== "string") return undefined;
     const count = createMesh(o).count;
     const elevation = decodeElevation(saved.data, count);
@@ -337,7 +370,11 @@ function loadSavedEdits(o: WorldOptions): SavedEdits | undefined {
       const a = sanitizeAnchors(saved.names?.[style]);
       if (a && a.nameStyle === style) names[style] = a;
     }
-    return { elevation, names, civ: saved.civ === undefined ? undefined : civFromJSON(saved.civ, count) };
+    return {
+      elevation, names,
+      civ: saved.civ === undefined ? undefined : civFromJSON(saved.civ, count),
+      infra: saved.infra === undefined ? undefined : infraFromJSON(saved.infra, count),
+    };
   } catch {
     return undefined;
   }
@@ -357,8 +394,14 @@ function updateHint(): void {
     ? BRUSH_TOOLS[brush.tool].hint
     : editTarget === "city"
       ? CITY_TOOL_HINTS[cityTool]
-      : "고른 국가의 영토로 칠합니다. 다른 나라의 수도 자리는 칠해지지 않습니다.";
-  const civNote = editTarget !== "terrain" && !civ ? " (처음 편집하면 자동 배치를 멈추고 지금 상태를 고정합니다)" : "";
+      : editTarget === "infra"
+        ? INFRA_TOOL_HINTS[infraTool]
+        : "고른 국가의 영토로 칠합니다. 다른 나라의 수도 자리는 칠해지지 않습니다.";
+  const civNote = (editTarget === "city" || editTarget === "border") && !civ
+    ? " (처음 편집하면 자동 배치를 멈추고 지금 상태를 고정합니다)"
+    : editTarget === "infra" && (infraTool === "road" || infraTool === "erase") && !infra.roads
+      ? " (도로를 처음 편집하면 자동 도로를 지금 상태로 고정합니다)"
+      : "";
   $("toolHint").textContent = hint + civNote;
 }
 
@@ -371,10 +414,16 @@ function setEditTarget(target: EditTarget): void {
     panel.hidden = panel.dataset.panel !== target;
   });
   // 도시 도구는 브러시를 쓰지 않고, 국경은 세기가 필요 없다.
-  $("brushFields").hidden = target === "city";
+  $("brushFields").hidden = target === "city" || target === "infra";
   $("strengthField").hidden = target !== "terrain";
-  mapWrap.classList.toggle("city-tool", target === "city");
+  mapWrap.classList.toggle("city-tool", target === "city" || target === "infra");
+  syncInfraFields();
   updateHint();
+}
+
+function syncInfraFields(): void {
+  $("facilityKindField").hidden = infraTool !== "facility";
+  $("featureNameField").hidden = infraTool !== "facility" && infraTool !== "port";
 }
 
 function setTool(tool: BrushTool): void {
@@ -414,6 +463,10 @@ function strokeCircle(x: number, y: number, r: number, dash: number[] = []): voi
 function drawCursor(x: number, y: number): void {
   clearOverlay();
   if (!editMode || !world) return;
+  if (editTarget === "infra") {
+    drawInfraCursor(x, y);
+    return;
+  }
   if (editTarget !== "city") {
     strokeCircle(x, y, brush.radius);
     return;
@@ -446,6 +499,40 @@ function drawCursor(x: number, y: number): void {
   }
 }
 
+function drawInfraCursor(x: number, y: number): void {
+  if (!world || !mesh) return;
+  const o = octx!;
+  if ((infraTool === "road" || infraTool === "rail") && routeStart >= 0) {
+    if (routePreview && routePreview.length >= 2) {
+      o.beginPath();
+      o.moveTo(mesh.x[routePreview[0]], mesh.y[routePreview[0]]);
+      for (const c of routePreview) o.lineTo(mesh.x[c], mesh.y[c]);
+      o.lineWidth = 4;
+      o.strokeStyle = "rgba(255,255,255,0.85)";
+      o.stroke();
+      o.lineWidth = 2;
+      o.strokeStyle = infraTool === "rail" ? "#2b2b2b" : "rgba(110,70,40,0.95)";
+      o.stroke();
+    }
+    strokeCircle(mesh.x[routeStart], mesh.y[routeStart], 5);
+    return;
+  }
+  const city = infraTool === "road" || infraTool === "rail" ? nearestWorldCity(x, y) : -1;
+  if (city >= 0) strokeCircle(mesh.x[world.cities[city].cell], mesh.y[world.cities[city].cell], 10);
+  else strokeCircle(x, y, infraTool === "erase" ? hitRadius() : 6, [3, 3]);
+}
+
+/** 끄는 동안 미리보기 경로를 프레임당 한 번만 계산한다 */
+function queueRoutePreview(x: number, y: number): void {
+  routeQueued = true;
+  requestAnimationFrame(() => {
+    if (!routeQueued || routeStart < 0 || !world) return;
+    routeQueued = false;
+    routePreview = routePath(world, routeStart, snapToCity(x, y), infraTool === "rail" ? "rail" : "road");
+    drawCursor(x, y);
+  });
+}
+
 /** 화면에 보이는 도시 중 커서와 가장 가까운 것 (world.cities 인덱스) */
 function nearestWorldCity(x: number, y: number): number {
   if (!world) return -1;
@@ -470,13 +557,13 @@ function ensureCiv(): CivState | undefined {
 }
 
 function snap(): Snapshot {
-  return { elevation: elevation!, civ };
+  return { elevation: elevation!, civ, infra };
 }
 
 /** 편집 연산을 되돌리기 기록과 함께 실행한다. 실패하면 기록을 남기지 않고 false. */
 function applyCivEdit(edit: (c: CivState) => EditResult, success?: string): boolean {
   if (!elevation) return false;
-  const before: Snapshot = { elevation: Float64Array.from(elevation), civ: civ && cloneCiv(civ) };
+  const before: Snapshot = copySnapshot(snap());
   const target = ensureCiv();
   if (!target) return false;
   const error = edit(target);
@@ -492,12 +579,62 @@ function applyCivEdit(edit: (c: CivState) => EditResult, success?: string): bool
   return true;
 }
 
+/** 시설 편집을 되돌리기 기록과 함께 실행한다. 실패하면 원래대로 두고 false. */
+function applyInfraEdit(edit: (inf: Infra) => EditResult, success?: string): boolean {
+  const before = copySnapshot(snap());
+  const error = edit(infra);
+  if (error) {
+    infra = before.infra;
+    setStatus(error, true);
+    return false;
+  }
+  editHistory.record(before);
+  commit();
+  if (success) setStatus(success);
+  return true;
+}
+
+/** 도로·철도 끝점: 도시 근처면 도시 셀에 붙인다 */
+function snapToCity(x: number, y: number): number {
+  const visible = nearestWorldCity(x, y);
+  return visible >= 0 ? world!.cities[visible].cell : findCell(mesh!, x, y);
+}
+
+function takeFeatureName(): string | undefined {
+  const input = $<HTMLInputElement>("featureName");
+  const name = input.value.trim();
+  input.value = "";
+  return name || undefined;
+}
+
+function handleInfraClick(x: number, y: number): void {
+  if (!world || !mesh) return;
+  const cell = findCell(mesh, x, y);
+  if (infraTool === "port") {
+    applyInfraEdit((inf) => addPort(world!, inf, cell, takeFeatureName()), "항구를 놓았습니다.");
+  } else if (infraTool === "facility") {
+    const kind = $<HTMLSelectElement>("facilityKind").value as FacilityKind;
+    applyInfraEdit((inf) => addFacility(world!, inf, cell, kind, takeFeatureName()), `${FACILITY_INFO[kind]?.ko ?? "시설"}을(를) 놓았습니다.`);
+  } else if (infraTool === "erase") {
+    let removed: string | null = null;
+    applyInfraEdit((inf) => {
+      removed = eraseAt(mesh!, inf, x, y, hitRadius(), autoRoads);
+      return removed ? null : "지울 시설이 없습니다. 항구·시설물·도로·철도 가까이를 눌러 주세요.";
+    });
+    if (removed) setStatus(`${removed}을(를) 지웠습니다.`);
+  }
+}
+
 // ── 포인터 입력 ──────────────────────────────────────────────────────
 let painting = false;
 let lastPoint: [number, number] | undefined;
 let flattenTarget = 0;
 let previewQueued = false;
 let draggingCity = -1;
+/** 도로·철도를 끌고 있을 때 출발 셀과 미리보기 경로 */
+let routeStart = -1;
+let routePreview: number[] | null = null;
+let routeQueued = false;
 let borderBefore: Snapshot | undefined;
 
 function queuePreview(natureOnly: boolean): void {
@@ -583,6 +720,16 @@ canvas.addEventListener("pointerdown", (e) => {
   if (!editMode || e.button !== 0 || !mesh || !elevation || !world) return;
   e.preventDefault();
   const [x, y] = toMapCoords(e);
+  if (editTarget === "infra") {
+    if (infraTool === "road" || infraTool === "rail") {
+      routeStart = snapToCity(x, y);
+      routePreview = null;
+      canvas.setPointerCapture(e.pointerId);
+    } else {
+      handleInfraClick(x, y);
+    }
+    return;
+  }
   if (editTarget === "terrain") {
     canvas.setPointerCapture(e.pointerId);
     editHistory.record(snap());
@@ -591,7 +738,7 @@ canvas.addEventListener("pointerdown", (e) => {
     lastPoint = undefined;
     paintTerrainTo(x, y);
   } else if (editTarget === "border") {
-    borderBefore = { elevation: Float64Array.from(elevation), civ: civ && cloneCiv(civ) };
+    borderBefore = copySnapshot(snap());
     if (!ensureCiv()) return;
     canvas.setPointerCapture(e.pointerId);
     painting = true;
@@ -600,7 +747,7 @@ canvas.addEventListener("pointerdown", (e) => {
   } else if (cityTool === "move") {
     const visible = nearestWorldCity(x, y);
     if (visible < 0) return;
-    const before: Snapshot = { elevation: Float64Array.from(elevation), civ: civ && cloneCiv(civ) };
+    const before: Snapshot = copySnapshot(snap());
     const c = ensureCiv();
     if (!c) return;
     draggingCity = c.cities.findIndex((cc) => cc.cell === world!.cities[visible].cell);
@@ -614,6 +761,10 @@ canvas.addEventListener("pointerdown", (e) => {
 canvas.addEventListener("pointermove", (e) => {
   const [x, y] = toMapCoords(e);
   if (editMode) drawCursor(x, y);
+  if (routeStart >= 0) {
+    queueRoutePreview(x, y);
+    return;
+  }
   if (painting) {
     if (editTarget === "terrain") paintTerrainTo(x, y);
     else if (editTarget === "border") paintBorderTo(x, y);
@@ -633,6 +784,23 @@ canvas.addEventListener("pointermove", (e) => {
 });
 
 function endPointer(e: PointerEvent): void {
+  if (routeStart >= 0) {
+    const start = routeStart;
+    routeStart = -1;
+    routePreview = null;
+    routeQueued = false;
+    clearOverlay();
+    if (!world || !mesh) return;
+    const [x, y] = toMapCoords(e);
+    const mode = infraTool === "rail" ? "rail" : "road";
+    const path = routePath(world, start, snapToCity(x, y), mode);
+    if (!path) {
+      setStatus("바다·호수로 막혀 있거나 물 위에서 시작·끝나는 경로는 만들 수 없습니다.", true);
+      return;
+    }
+    applyInfraEdit((inf) => addPath(inf, mode, path, autoRoads), mode === "rail" ? "철도를 놓았습니다." : "도로를 놓았습니다.");
+    return;
+  }
   if (draggingCity >= 0) {
     const index = draggingCity;
     draggingCity = -1;
@@ -668,12 +836,13 @@ function endPointer(e: PointerEvent): void {
 canvas.addEventListener("pointerup", endPointer);
 canvas.addEventListener("pointercancel", endPointer);
 canvas.addEventListener("pointerleave", () => {
-  if (!painting && draggingCity < 0) clearOverlay();
+  if (!painting && draggingCity < 0 && routeStart < 0) clearOverlay();
 });
 
 function restore(s: Snapshot): void {
   elevation = s.elevation;
   civ = s.civ;
+  infra = s.infra;
   commit();
 }
 
@@ -711,12 +880,16 @@ async function importFile(file: File): Promise<void> {
   currentTerrainKey = ""; // 강제로 새 지형으로 취급
   edited = false;
   civ = undefined;
+  infra = emptyInfra();
   generate(parsed.options, {
     restoreFrom: parsed.elevation,
     names: parsed.anchors ? { [parsed.anchors.nameStyle]: parsed.anchors } : {},
     civ: parsed.civ,
+    infra: parsed.infra,
   });
-  const extras = [edited ? "편집된 지형" : "", civ ? "직접 편집한 도시·국경" : ""].filter(Boolean).join(", ");
+  const extras = [
+    edited ? "편집된 지형" : "", civ ? "직접 편집한 도시·국경" : "", isEmptyInfra(infra) ? "" : "도로·철도·시설",
+  ].filter(Boolean).join(", ");
   setStatus(`${file.name}을(를) 불러왔습니다.${extras ? ` (${extras} 포함)` : ""}`);
 }
 
@@ -762,6 +935,20 @@ document.querySelectorAll<HTMLInputElement>('input[name="cityTool"]').forEach((r
     cityTool = radio.value as CityTool;
     updateHint();
   });
+});
+document.querySelectorAll<HTMLInputElement>('input[name="infraTool"]').forEach((radio) => {
+  radio.addEventListener("change", () => {
+    infraTool = radio.value as InfraTool;
+    syncInfraFields();
+    updateHint();
+  });
+});
+$("resetRoads").addEventListener("click", () => {
+  if (infra.roads === undefined) return;
+  if (!confirm("직접 그리거나 지운 도로를 버리고 자동 도로로 돌아갈까요? (철도·항구·시설물은 그대로입니다)")) return;
+  editHistory.record(copySnapshot(snap()));
+  infra = { ...infra, roads: undefined };
+  commit();
 });
 const brushSize = $<HTMLInputElement>("brushSize");
 const brushStrength = $<HTMLInputElement>("brushStrength");
@@ -831,8 +1018,8 @@ $("exportPng").addEventListener("click", () => {
 });
 $("exportJson").addEventListener("click", () => {
   if (!world) return;
-  const suffix = edited || civ ? "_편집" : "";
-  download(`${safeFileName(options.seed)}${suffix}.json`, new Blob([JSON.stringify(toJSON(world, civ))], { type: "application/json" }));
+  const suffix = hasEdits() ? "_편집" : "";
+  download(`${safeFileName(options.seed)}${suffix}.json`, new Blob([JSON.stringify(toJSON(world, civ, infra))], { type: "application/json" }));
 });
 $("importJson").addEventListener("click", () => $<HTMLInputElement>("importFile").click());
 $<HTMLInputElement>("importFile").addEventListener("change", (e) => {
@@ -844,7 +1031,7 @@ $<HTMLInputElement>("importFile").addEventListener("change", (e) => {
 $("copyLink").addEventListener("click", async () => {
   try {
     await navigator.clipboard.writeText(location.href);
-    setStatus(edited || civ
+    setStatus(hasEdits()
       ? "링크를 복사했습니다. 편집 내용은 링크에 담기지 않으니 함께 보내려면 'JSON 저장'을 쓰세요."
       : "현재 지도 링크를 복사했습니다.");
   } catch {
@@ -865,6 +1052,6 @@ Promise.race([
   new Promise((r) => setTimeout(r, 2500)),
 ]).catch(() => undefined).finally(() => {
   const saved = loadSavedEdits(initial);
-  generate(initial, saved ? { restoreFrom: saved.elevation, names: saved.names, civ: saved.civ } : {});
-  if (saved && (edited || civ)) setStatus("이 브라우저에 저장된 편집 내용을 불러왔습니다. '지형 초기화'·'자동 배치로'로 되돌릴 수 있습니다.");
+  generate(initial, saved ? { restoreFrom: saved.elevation, names: saved.names, civ: saved.civ, infra: saved.infra } : {});
+  if (saved && hasEdits()) setStatus("이 브라우저에 저장된 편집 내용을 불러왔습니다. '지형 초기화'·'자동 배치로'로 되돌릴 수 있습니다.");
 });

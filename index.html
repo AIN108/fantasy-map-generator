@@ -76,6 +76,7 @@
             <button type="button" role="tab" data-target="terrain" aria-selected="true">지형</button>
             <button type="button" role="tab" data-target="city" aria-selected="false">도시</button>
             <button type="button" role="tab" data-target="border" aria-selected="false">국경</button>
+            <button type="button" role="tab" data-target="infra" aria-selected="false">시설</button>
           </div>
 
           <div class="tab-panel" data-panel="terrain">
@@ -114,6 +115,33 @@
             </details>
           </div>
 
+          <div class="tab-panel" data-panel="infra" hidden>
+            <div class="tools" role="radiogroup" aria-label="시설 도구">
+              <label><input type="radio" name="infraTool" value="road" checked /> 도로</label>
+              <label><input type="radio" name="infraTool" value="rail" /> 철도</label>
+              <label><input type="radio" name="infraTool" value="port" /> 항구</label>
+              <label><input type="radio" name="infraTool" value="facility" /> 시설물</label>
+              <label><input type="radio" name="infraTool" value="erase" /> 지우기</label>
+            </div>
+            <label class="field" id="facilityKindField">
+              <span>시설 종류</span>
+              <select id="facilityKind">
+                <option value="castle">성</option>
+                <option value="fort">요새</option>
+                <option value="temple">사원</option>
+                <option value="mine">광산</option>
+                <option value="tower">탑</option>
+                <option value="ruin">유적</option>
+                <option value="lighthouse">등대 (해안)</option>
+              </select>
+            </label>
+            <label class="field" id="featureNameField">
+              <span>이름 (선택, 놓을 때 붙음)</span>
+              <input id="featureName" type="text" maxlength="20" placeholder="비워 두면 이름 없음" />
+            </label>
+            <button type="button" id="resetRoads" class="wide">도로 자동 배치로</button>
+          </div>
+
           <p class="hint" id="toolHint"></p>
           <div id="brushFields">
             <label class="field">
@@ -142,6 +170,8 @@
           <label><input type="checkbox" data-layer="borders" /> 국경</label>
           <label><input type="checkbox" data-layer="stateTint" /> 국가 색</label>
           <label><input type="checkbox" data-layer="roads" /> 도로</label>
+          <label><input type="checkbox" data-layer="rails" /> 철도</label>
+          <label><input type="checkbox" data-layer="facilities" /> 항구·시설</label>
           <label><input type="checkbox" data-layer="cities" /> 도시</label>
           <label><input type="checkbox" data-layer="labels" /> 지명</label>
         </fieldset>

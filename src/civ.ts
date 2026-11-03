@@ -25,11 +25,11 @@ export interface State {
 }
 
 /** 지형별 이동 비용 배수 (국가 확장·도로 경로 공용) */
-const TERRAIN_COST: Record<Biome, number> = {
+export const TERRAIN_COST: Record<Biome, number> = {
   ocean: Infinity, lake: Infinity, beach: 1.2, glacier: 12, tundra: 3, taiga: 2.2, grassland: 1,
   temperateForest: 1.8, rainforest: 3.5, savanna: 1.3, desert: 3, wetland: 3.5, mountain: 8,
 };
-const RIVER_CROSSING_COST = 4;
+export const RIVER_CROSSING_COST = 4;
 
 export function isCoastal(mesh: Mesh, elevation: Float64Array, i: number): boolean {
   let coastal = false;
