@@ -2,7 +2,7 @@ import {
   addWaterMoisture, classifyBiome, computeMoisture, computeTemperature, type Biome,
 } from "./climate.ts";
 import {
-  buildRoads, distinctColor, expandStates, findPeaks, isCoastal, pickSpaced, settlementScore, stateColor, stateLabelCells,
+  buildRoads, distinctColor, expandStates, type LinkGraph, findPeaks, isCoastal, pickSpaced, settlementScore, stateColor, stateLabelCells,
   type City, type State,
 } from "./civ.ts";
 import { computeHydrology, extractRivers, type Hydrology } from "./hydrology.ts";
@@ -116,10 +116,11 @@ export function generateWorld(input: Partial<WorldOptions> = {}): WorldMap {
  * natureOnly면 문명(도시·국가·도로·지명)을 건너뛴다. 브러시로 칠하는 동안의 빠른 미리보기용.
  * prior를 주면 같은 자리에 있는 국가·도시·강·봉우리가 이전 이름(국가는 색까지)을 물려받는다.
  * civ를 주면 도시·국가·국경을 자동 배치하지 않고 사용자가 편집한 값을 그대로 쓴다.
+ * links(다리·터널 연결)를 주면 자동 도로가 그 연결을 길로 쓴다 (다리로 이은 섬끼리도 도로가 생긴다).
  */
 export function deriveWorld(
   options: WorldOptions, mesh: Mesh, elevation: Float64Array, natureOnly = false, prior?: NameAnchors,
-  civ?: CivState,
+  civ?: CivState, links?: LinkGraph,
 ): WorldMap {
   validateOptions(options);
   if (elevation.length !== mesh.count) {
@@ -174,7 +175,7 @@ export function deriveWorld(
 
   if (civ) {
     return deriveEditedCiv(options, mesh, elevation, biome, hydro, civ, {
-      temperature, moisture, rivers, namedRivers, peakCells, capitalSpacing, prior,
+      temperature, moisture, rivers, namedRivers, peakCells, capitalSpacing, prior, links,
     });
   }
 
@@ -221,7 +222,7 @@ export function deriveWorld(
   const cities: City[] = [...capitals.map((c) => makeCity(c, true)), ...towns.map((c) => makeCity(c, false))];
 
   const pairHash = cellHash(seed, "roads");
-  const roads = buildRoads(mesh, biome, hydro, cities, (a, b) => pairHash(Math.min(a, b) * 65536 + Math.max(a, b)), capitalSpacing * 1.2);
+  const roads = buildRoads(mesh, biome, hydro, cities, (a, b) => pairHash(Math.min(a, b) * 65536 + Math.max(a, b)), capitalSpacing * 1.2, links);
 
   // 큰 강만 이름을 붙인다 (지도가 이름으로 뒤덮이지 않게).
   namedRivers.forEach((r, k) => { r.name = inherit?.rivers.get(k) ?? names.next("river"); });
@@ -242,7 +243,7 @@ function deriveEditedCiv(
   options: WorldOptions, mesh: Mesh, elevation: Float64Array, biome: Biome[], hydro: Hydrology, civ: CivState,
   rest: {
     temperature: Float64Array; moisture: Float64Array; rivers: River[]; namedRivers: River[];
-    peakCells: number[]; capitalSpacing: number; prior?: NameAnchors;
+    peakCells: number[]; capitalSpacing: number; prior?: NameAnchors; links?: LinkGraph;
   },
 ): WorldMap {
   const style = options.nameStyle;
@@ -279,7 +280,9 @@ function deriveEditedCiv(
     }));
 
   const pairHash = cellHash(options.seed, "roads");
-  const roads = buildRoads(mesh, biome, hydro, cities, (a, b) => pairHash(Math.min(a, b) * 65536 + Math.max(a, b)), rest.capitalSpacing * 1.2);
+  const roads = buildRoads(
+    mesh, biome, hydro, cities, (a, b) => pairHash(Math.min(a, b) * 65536 + Math.max(a, b)), rest.capitalSpacing * 1.2, rest.links,
+  );
 
   // 강·봉우리는 자동 배치 때와 같은 방식으로 이름을 유지하되, 국가·도시 이름과 겹치지 않게 한다.
   const usePrior = rest.prior && rest.prior.nameStyle === style ? rest.prior : undefined;

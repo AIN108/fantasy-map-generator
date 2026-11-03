@@ -1,4 +1,4 @@
-import { RIVER_CROSSING_COST, TERRAIN_COST } from "./civ.ts";
+import { RIVER_CROSSING_COST, TERRAIN_COST, type LinkEdge, type LinkGraph } from "./civ.ts";
 import type { Biome } from "./climate.ts";
 import type { EditResult } from "./civedit.ts";
 import { MinHeap } from "./heap.ts";
@@ -100,12 +100,47 @@ const isCoast = (t: Terrain, i: number): boolean => {
   return coast;
 };
 
+/** 다리·터널을 건널 때의 거리당 비용 배수 (일부러 놓은 길이므로 돌아가는 것보다 싸게) */
+export const BRIDGE_COST = 1.1;
+export const SPAN_TUNNEL_COST = 1.5;
+
+/**
+ * 양 끝이 모두 육지인 다리·터널로 경로 그래프의 추가 연결을 만든다 (양방향).
+ * 도로·철도 경로 계산과 자동 도로가 이 연결을 길로 쓴다.
+ */
+export function spanLinks(t: Terrain, spans: { bridges: readonly Span[]; tunnels: readonly Span[] }): LinkGraph {
+  const graph = new Map<number, LinkEdge[]>();
+  const add = (from: number, to: number, mult: number): void => {
+    const list = graph.get(from) ?? [];
+    list.push({ to, mult });
+    graph.set(from, list);
+  };
+  for (const [list, mult] of [[spans.bridges, BRIDGE_COST], [spans.tunnels, SPAN_TUNNEL_COST]] as const) {
+    for (const s of list) {
+      if (!onLand(t, s.a) || !onLand(t, s.b)) continue;
+      add(s.a, s.b, mult);
+      add(s.b, s.a, mult);
+    }
+  }
+  return graph;
+}
+
+/** 두 셀이 이웃이거나 연결(다리·터널)로 이어져 있는가 */
+export function connected(mesh: Mesh, links: LinkGraph, a: number, b: number): boolean {
+  if (links.get(a)?.some((l) => l.to === b)) return true;
+  let adj = false;
+  forEachNeighbor(mesh, a, (j) => { if (j === b) adj = true; });
+  return adj;
+}
+
 /**
  * 지형을 따라가는 경로(A*). 도로는 자동 도로와 같은 지형 비용을, 철도는 경사에 훨씬 민감한 비용을 쓴다
  * (철도는 급경사를 오르지 못해 돌아가고, 우회가 너무 길면 고산 구간을 터널로 관통한다).
  * 바다·호수는 지날 수 없다. 길이 없으면 null.
  */
-export function routePath(t: Terrain, start: number, goal: number, mode: "road" | "rail"): number[] | null {
+export function routePath(
+  t: Terrain, start: number, goal: number, mode: "road" | "rail", links?: LinkGraph,
+): number[] | null {
   if (!onLand(t, start) || !onLand(t, goal)) return null;
   if (start === goal) return [start];
   const { mesh, elevation, biome, hydro } = t;
@@ -134,14 +169,17 @@ export function routePath(t: Terrain, start: number, goal: number, mode: "road" 
     const [f, i] = heap.pop()!;
     if (i === goal) break;
     if (f - h(i) > g[i] + 1e-9) continue;
-    forEachNeighbor(mesh, i, (j) => {
-      const ng = g[i] + step(i, j);
+    const relax = (j: number, c: number): void => {
+      const ng = g[i] + c;
       if (ng < g[j]) {
         g[j] = ng;
         prev[j] = i;
         heap.push(ng + h(j), j);
       }
-    });
+    };
+    forEachNeighbor(mesh, i, (j) => relax(j, step(i, j)));
+    // 다리·터널: 물이나 산을 건너뛰어 건너편 끝으로 바로 간다
+    for (const link of links?.get(i) ?? []) relax(link.to, distance(mesh, i, link.to) * link.mult);
   }
   if (!Number.isFinite(g[goal])) return null;
   const path: number[] = [];
@@ -202,18 +240,71 @@ export function addSeaRoute(infra: Infra, path: number[]): EditResult {
  * 다리는 그 사이에 물(바다·호수·강)이 하나 이상 있어야 하고, 터널은 사이가 어떤 지형이든 된다 (해저 터널 포함).
  */
 export function addSpan(t: Terrain, infra: Infra, kind: "bridge" | "tunnel", a: number, b: number): EditResult {
+  const list = kind === "bridge" ? infra.bridges : infra.tunnels;
+  if (list.length >= MAX_PATHS) return `${kind === "bridge" ? "다리" : "터널"}는 ${MAX_PATHS}개까지 놓을 수 있습니다.`;
+  const error = validateSpan(t, infra, kind, a, b);
+  if (error) return error;
+  list.push({ a, b });
+  return null;
+}
+
+/** 다리·터널 위치 검사 (놓기·옮기기 공용). except는 옮기는 중인 자기 자신의 번호. */
+function validateSpan(t: Terrain, infra: Infra, kind: "bridge" | "tunnel", a: number, b: number, except = -1): EditResult {
   const label = kind === "bridge" ? "다리" : "터널";
   if (a === b) return `${label}의 양 끝이 같습니다. 끌어서 두 지점을 이어 주세요.`;
   if (!onLand(t, a) || !onLand(t, b)) return `${label}의 양 끝은 육지여야 합니다.`;
   const len = distance(t.mesh, a, b);
   if (len > MAX_SPAN_LENGTH) return `${label}는 ${MAX_SPAN_LENGTH}px까지 놓을 수 있습니다 (지금 ${Math.round(len)}px).`;
   const list = kind === "bridge" ? infra.bridges : infra.tunnels;
-  if (list.length >= MAX_PATHS) return `${label}는 ${MAX_PATHS}개까지 놓을 수 있습니다.`;
-  if (list.some((s) => (s.a === a && s.b === b) || (s.a === b && s.b === a))) return `같은 자리에 이미 ${label}가 있습니다.`;
+  if (list.some((s, i) => i !== except && ((s.a === a && s.b === b) || (s.a === b && s.b === a)))) {
+    return `같은 자리에 이미 ${label}가 있습니다.`;
+  }
   if (kind === "bridge" && !spanCells(t.mesh, a, b).some((c) => !onLand(t, c) || t.hydro.isRiver[c])) {
     return "다리는 물(바다·호수·강)을 건너야 합니다. 물 건너편까지 끌어 주세요.";
   }
-  list.push({ a, b });
+  return null;
+}
+
+export type SpanPart = "a" | "b" | "body";
+
+/**
+ * (x, y)에서 radius 안의 다리·터널. 끝점 근처면 그 끝("a"/"b"), 아니면 몸통("body").
+ * 끝점이 몸통보다 우선이다 (끝을 잡아 늘이거나 옮기기 쉽게).
+ */
+export function hitSpan(
+  mesh: Mesh, infra: Infra, x: number, y: number, radius: number,
+): { kind: "bridge" | "tunnel"; index: number; part: SpanPart } | null {
+  const r2 = radius * radius;
+  let best: { kind: "bridge" | "tunnel"; index: number; part: SpanPart; d: number } | null = null;
+  for (const kind of ["bridge", "tunnel"] as const) {
+    (kind === "bridge" ? infra.bridges : infra.tunnels).forEach((s, index) => {
+      const da = (mesh.x[s.a] - x) ** 2 + (mesh.y[s.a] - y) ** 2;
+      const db = (mesh.x[s.b] - x) ** 2 + (mesh.y[s.b] - y) ** 2;
+      // 끝점은 거리를 절반으로 쳐서 몸통보다 먼저 잡히게 한다
+      const candidates: [SpanPart, number][] = [
+        ["a", da * 0.25], ["b", db * 0.25], ["body", segDist2(x, y, mesh.x[s.a], mesh.y[s.a], mesh.x[s.b], mesh.y[s.b])],
+      ];
+      for (const [part, d] of candidates) {
+        const raw = part === "body" ? d : d * 4;
+        if (raw <= r2 && (!best || d < best.d)) best = { kind, index, part, d };
+      }
+    });
+  }
+  if (!best) return null;
+  const { kind, index, part } = best;
+  return { kind, index, part };
+}
+
+/** 다리·터널의 끝을 새 셀로 옮긴다 (몸통을 옮길 때는 a, b를 둘 다 바꿔 준다). 놓을 때와 같은 조건으로 검사. */
+export function moveSpan(t: Terrain, infra: Infra, kind: "bridge" | "tunnel", index: number, a: number, b: number): EditResult {
+  const list = kind === "bridge" ? infra.bridges : infra.tunnels;
+  const span = list[index];
+  if (!span) return `${kind === "bridge" ? "다리" : "터널"}를 찾을 수 없습니다.`;
+  if (span.a === a && span.b === b) return null;
+  const error = validateSpan(t, infra, kind, a, b, index);
+  if (error) return error;
+  span.a = a;
+  span.b = b;
   return null;
 }
 
@@ -499,12 +590,19 @@ export function visibleInfra(t: Terrain, infra: Infra, autoRoads: number[][]): {
   roads: number[][]; rails: number[][]; seaRoutes: number[][]; ports: PointFeature[]; facilities: Facility[];
   bridges: Span[]; tunnels: Span[]; hiddenMarks: number[];
 } {
+  // 다리·터널을 옮기거나 지우면 그 위를 지나던 경로에 '이웃도 연결도 아닌' 건너뜀이 남는다:
+  // 그 지점에서도 끊어서, 물 위에 허공의 선이 남지 않게 한다.
+  const links = spanLinks(t, infra);
   const split = (paths: number[][]): number[][] => paths.flatMap((p) => {
     const out: number[][] = [];
     let cur: number[] = [];
     for (const c of p) {
-      if (onLand(t, c)) cur.push(c);
-      else { if (cur.length >= 2) out.push(cur); cur = []; }
+      if (!onLand(t, c)) { if (cur.length >= 2) out.push(cur); cur = []; continue; }
+      if (cur.length > 0 && !connected(t.mesh, links, cur[cur.length - 1], c)) {
+        if (cur.length >= 2) out.push(cur);
+        cur = [];
+      }
+      cur.push(c);
     }
     if (cur.length >= 2) out.push(cur);
     return out;

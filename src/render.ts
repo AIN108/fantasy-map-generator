@@ -294,14 +294,37 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
     ctx.setLineDash([]);
   }
 
+  // 5-2) 직접 놓은 다리·터널: 도로·철도보다 먼저 그려 그 위로 길이 지나가게 한다
+  // (도로·철도 레이어 중 하나라도 켜져 있으면 그린다)
+  if (layers.roads || layers.rails) {
+    for (const s of world.tunnels) drawTunnelSpan(ctx, mesh.x[s.a], mesh.y[s.a], mesh.x[s.b], mesh.y[s.b]);
+    for (const s of world.bridges) drawBridgeSpan(ctx, mesh.x[s.a], mesh.y[s.a], mesh.x[s.b], mesh.y[s.b]);
+  }
+  // 터널 연결 구간은 길 선을 그리지 않는다 (땅속이므로 터널 표기만 보이게)
+  const tunnelPairs = new Set(world.tunnels.flatMap((t) => [`${t.a}>${t.b}`, `${t.b}>${t.a}`]));
+  const outsideTunnels = (path: number[]): number[][] => {
+    const pieces: number[][] = [];
+    let cur: number[] = [path[0]];
+    for (let k = 1; k < path.length; k++) {
+      if (tunnelPairs.has(`${path[k - 1]}>${path[k]}`)) {
+        if (cur.length >= 2) pieces.push(cur);
+        cur = [path[k]];
+      } else cur.push(path[k]);
+    }
+    if (cur.length >= 2) pieces.push(cur);
+    return pieces;
+  };
+
   // 6) 도로
   if (layers.roads) {
     ctx.strokeStyle = "rgba(110,70,40,0.8)";
     ctx.lineWidth = 1.1;
     ctx.setLineDash([3, 2]);
     for (const road of world.roads) {
-      smoothPath(ctx, mesh, road);
-      ctx.stroke();
+      for (const piece of outsideTunnels(road)) {
+        smoothPath(ctx, mesh, piece);
+        ctx.stroke();
+      }
     }
     ctx.setLineDash([]);
     for (const road of world.roads) {
@@ -322,7 +345,7 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
         from = b;
       }
       if (from < rail.length - 1) pieces.push(rail.slice(from));
-      for (const piece of pieces) {
+      for (const piece of pieces.flatMap(outsideTunnels)) {
         if (piece.length < 2) continue;
         smoothPath(ctx, mesh, piece);
         ctx.strokeStyle = "#2b2b2b";
@@ -337,12 +360,6 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
       for (const [a, b] of marks.tunnels) drawTunnel(ctx, mesh, rail, a, b);
       for (const k of marks.bridges) drawBridge(ctx, mesh, rail, k, "#2b2b2b");
     }
-  }
-
-  // 6-2) 직접 놓은 다리·터널 (도로·철도 레이어 중 하나라도 켜져 있으면 그린다)
-  if (layers.roads || layers.rails) {
-    for (const s of world.tunnels) drawTunnelSpan(ctx, mesh.x[s.a], mesh.y[s.a], mesh.x[s.b], mesh.y[s.b]);
-    for (const s of world.bridges) drawBridgeSpan(ctx, mesh.x[s.a], mesh.y[s.a], mesh.x[s.b], mesh.y[s.b]);
   }
 
   const placer = new LabelPlacer(ctx, mesh.width, mesh.height);

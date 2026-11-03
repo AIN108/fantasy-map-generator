@@ -6,7 +6,8 @@ import {
   applyBrush, BRUSH_TOOLS, decodeElevation, EditHistory, encodeElevation, type Brush, type BrushTool,
 } from "./editor.ts";
 import {
-  addFacility, addPath, addPort, addSeaRoute, addSpan, cloneInfra, MAX_SPAN_LENGTH, emptyInfra, eraseAt, FACILITY_INFO, hitPoint, infraFromJSON,
+  addFacility, addPath, addPort, addSeaRoute, addSpan, cloneInfra, hitSpan, MAX_SPAN_LENGTH, moveSpan, spanLinks,
+  type SpanPart, emptyInfra, eraseAt, FACILITY_INFO, hitPoint, infraFromJSON,
   infraToJSON, isEmptyInfra, movePoint, routePath, routeSea, type FacilityKind, type Infra, type PointKind,
 } from "./infra.ts";
 import { findCell, type Mesh } from "./mesh.ts";
@@ -89,14 +90,14 @@ const editHistory = new EditHistory<Snapshot>(50, copySnapshot);
 type EditTarget = "terrain" | "city" | "border" | "infra";
 type InfraTool = "road" | "rail" | "sea" | "bridge" | "tunnel" | "port" | "facility" | "move" | "erase";
 const INFRA_TOOL_HINTS: Record<InfraTool, string> = {
-  road: "출발점에서 도착점까지 끌어 놓으면 지형을 따라 도로가 생깁니다. 도시 근처에서 놓으면 도시에 붙습니다.",
+  road: "출발점에서 도착점까지 끌어 놓으면 지형을 따라 도로가 생깁니다. 도시 근처에서 놓으면 도시에 붙고, 직접 놓은 다리·터널도 길로 씁니다.",
   rail: "출발점에서 도착점까지 끌어 놓으면 철도가 생깁니다. 철도는 급경사를 피해 산을 크게 돌아갑니다.",
   sea: "항구에서 다른 항구까지 끌어 놓으면 바다를 따라 항로가 생깁니다. 얕은 연안보다 깊은 바다를 조금 더 선호합니다.",
   bridge: `육지에서 물 건너편 육지까지 끌어 놓으면 곧은 다리가 놓입니다 (강·호수·해협, ${MAX_SPAN_LENGTH}px까지).`,
   tunnel: `두 육지 지점 사이를 끌어 놓으면 곧은 터널이 놓입니다. 산을 관통하거나 바다 밑으로 지날 수 있습니다 (${MAX_SPAN_LENGTH}px까지).`,
   port: "바다에 닿은 해안을 누르면 항구가 생깁니다.",
   facility: "고른 종류의 시설물을 누른 자리에 둡니다. 등대는 해안에만 둘 수 있습니다.",
-  move: "항구·시설물을 끌어 옮깁니다. 항구를 옮기면 이어진 항로도 새 자리로 다시 계산합니다.",
+  move: "항구·시설물·다리·터널을 끌어 옮깁니다. 다리·터널은 끝점을 끌면 그 끝만, 가운데를 끌면 통째로 옮겨집니다. 항구를 옮기면 이어진 항로도 다시 계산합니다.",
   erase: "누른 곳에서 가장 가까운 시설을 지웁니다. 자동 다리·터널 표기를 누르면 그 표기만 숨깁니다.",
 };
 type CityTool = "move" | "add" | "delete" | "rename" | "capital" | "newState";
@@ -253,7 +254,11 @@ function derive(natureOnly = false): void {
     const t0 = performance.now();
     const prior = nameMemory[options.nameStyle];
     if (civ) ensureCivNames(civ, options.nameStyle, options.seed);
-    const derived = deriveWorld(options, mesh, elevation, natureOnly, prior, civ);
+    // 자동 도로가 다리·터널을 길로 쓰도록 연결을 넘긴다. 호수 여부는 직전 계산 결과를 쓴다
+    // (지형을 바꾼 직후 한 번은 오래된 값일 수 있지만, 다리 양 끝이 호수가 되는 경우는 드물다).
+    const lakes = world && world.mesh === mesh ? world.hydro.isLake : new Uint8Array(mesh.count);
+    const links = spanLinks({ mesh, elevation, biome: [], hydro: { isLake: lakes, isRiver: lakes } }, infra);
+    const derived = deriveWorld(options, mesh, elevation, natureOnly, prior, civ, links);
     if (!natureOnly) {
       nameMemory[options.nameStyle] = mergeAnchors(extractAnchors(derived), prior);
       autoRoads = derived.roads;
@@ -565,9 +570,35 @@ function drawInfraCursor(x: number, y: number): void {
     return;
   }
   if (infraTool === "move") {
+    if (draggingSpan) {
+      const cells = movedSpanCells(x, y);
+      if (!cells) return;
+      const [a, b] = cells;
+      const tooLong = Math.hypot(mesh.x[b] - mesh.x[a], mesh.y[b] - mesh.y[a]) > MAX_SPAN_LENGTH;
+      o.globalAlpha = tooLong ? 0.4 : 0.9;
+      if (draggingSpan.kind === "bridge") drawBridgeSpan(o, mesh.x[a], mesh.y[a], mesh.x[b], mesh.y[b]);
+      else drawTunnelSpan(o, mesh.x[a], mesh.y[a], mesh.x[b], mesh.y[b]);
+      o.globalAlpha = 1;
+      return;
+    }
     const hit = hitPoint(mesh, infra, x, y, hitRadius());
     const item = hit && (hit.kind === "port" ? infra.ports[hit.index] : infra.facilities[hit.index]);
-    if (item) strokeCircle(mesh.x[item.cell], mesh.y[item.cell], 10);
+    if (item) { strokeCircle(mesh.x[item.cell], mesh.y[item.cell], 10); return; }
+    const span = hitSpan(mesh, infra, x, y, hitRadius());
+    if (span) {
+      const sp = (span.kind === "bridge" ? infra.bridges : infra.tunnels)[span.index];
+      if (span.part === "body") {
+        o.lineWidth = 6;
+        o.strokeStyle = "rgba(255,255,255,0.5)";
+        o.beginPath();
+        o.moveTo(mesh.x[sp.a], mesh.y[sp.a]);
+        o.lineTo(mesh.x[sp.b], mesh.y[sp.b]);
+        o.stroke();
+      } else {
+        const c = span.part === "a" ? sp.a : sp.b;
+        strokeCircle(mesh.x[c], mesh.y[c], 7);
+      }
+    }
     return;
   }
   const city = infraTool === "road" || infraTool === "rail" ? nearestWorldCity(x, y) : -1;
@@ -585,7 +616,7 @@ function queueRoutePreview(x: number, y: number): void {
       const end = snapToPort(x, y);
       routePreview = end >= 0 ? routeSea(world, routeStart, end) : null;
     } else {
-      routePreview = routePath(world, routeStart, snapToCity(x, y), infraTool === "rail" ? "rail" : "road");
+      routePreview = routePath(world, routeStart, snapToCity(x, y), infraTool === "rail" ? "rail" : "road", spanLinks(world, world));
     }
     drawCursor(x, y);
   });
@@ -658,6 +689,17 @@ function snapToCity(x: number, y: number): number {
   return visible >= 0 ? world!.cities[visible].cell : findCell(mesh!, x, y);
 }
 
+/** 끌고 있는 다리·터널을 (x, y)에 놓았을 때의 새 양 끝 셀 */
+function movedSpanCells(x: number, y: number): [number, number] | null {
+  if (!draggingSpan || !mesh) return null;
+  const s = (draggingSpan.kind === "bridge" ? infra.bridges : infra.tunnels)[draggingSpan.index];
+  if (!s) return null;
+  if (draggingSpan.part === "a") return [findCell(mesh, x, y), s.b];
+  if (draggingSpan.part === "b") return [s.a, findCell(mesh, x, y)];
+  const dx = x - draggingSpan.grabX, dy = y - draggingSpan.grabY;
+  return [findCell(mesh, mesh.x[s.a] + dx, mesh.y[s.a] + dy), findCell(mesh, mesh.x[s.b] + dx, mesh.y[s.b] + dy)];
+}
+
 /** 항로 끝점: 가까운 (보이는) 항구 셀, 없으면 -1 */
 function snapToPort(x: number, y: number): number {
   if (!world || !mesh) return -1;
@@ -715,6 +757,8 @@ let routePreview: number[] | null = null;
 let routeQueued = false;
 /** 이동 도구로 끌고 있는 항구·시설물 */
 let draggingPoint: { kind: PointKind; index: number } | null = null;
+/** 이동 도구로 끌고 있는 다리·터널 (끝 하나 또는 몸통 전체), 잡은 지점의 지도 좌표 */
+let draggingSpan: { kind: "bridge" | "tunnel"; index: number; part: SpanPart; grabX: number; grabY: number } | null = null;
 let borderBefore: Snapshot | undefined;
 
 function queuePreview(natureOnly: boolean): void {
@@ -816,7 +860,11 @@ canvas.addEventListener("pointerdown", (e) => {
       canvas.setPointerCapture(e.pointerId);
     } else if (infraTool === "move") {
       draggingPoint = hitPoint(mesh, infra, x, y, hitRadius());
-      if (!draggingPoint) { setStatus("옮길 항구·시설물을 눌러 끌어 주세요.", true); return; }
+      if (!draggingPoint) {
+        const span = hitSpan(mesh, infra, x, y, hitRadius());
+        if (!span) { setStatus("옮길 항구·시설물·다리·터널을 눌러 끌어 주세요.", true); return; }
+        draggingSpan = { ...span, grabX: x, grabY: y };
+      }
       canvas.setPointerCapture(e.pointerId);
     } else {
       handleInfraClick(x, y);
@@ -858,7 +906,7 @@ canvas.addEventListener("pointermove", (e) => {
     if (!isSpanTool()) queueRoutePreview(x, y);
     return;
   }
-  if (draggingPoint) return;
+  if (draggingPoint || draggingSpan) return;
   if (painting) {
     if (editTarget === "terrain") paintTerrainTo(x, y);
     else if (editTarget === "border") paintBorderTo(x, y);
@@ -878,6 +926,20 @@ canvas.addEventListener("pointermove", (e) => {
 });
 
 function endPointer(e: PointerEvent): void {
+  if (draggingSpan) {
+    const [x, y] = toMapCoords(e);
+    const cells = movedSpanCells(x, y);
+    const target = draggingSpan;
+    draggingSpan = null;
+    clearOverlay();
+    if (!cells || !world) return;
+    const label = target.kind === "bridge" ? "다리" : "터널";
+    const span = (target.kind === "bridge" ? infra.bridges : infra.tunnels)[target.index];
+    if (span && span.a === cells[0] && span.b === cells[1]) return;
+    applyInfraEdit((inf) => moveSpan(world!, inf, target.kind, target.index, cells[0], cells[1]),
+      target.part === "body" ? `${label}${eul(label)} 옮겼습니다.` : `${label} 끝을 옮겼습니다.`);
+    return;
+  }
   if (draggingPoint) {
     const target = draggingPoint;
     draggingPoint = null;
@@ -920,7 +982,7 @@ function endPointer(e: PointerEvent): void {
       return;
     }
     const mode = infraTool === "rail" ? "rail" : "road";
-    const path = routePath(world, start, snapToCity(x, y), mode);
+    const path = routePath(world, start, snapToCity(x, y), mode, spanLinks(world, world));
     if (!path) {
       setStatus("바다·호수로 막혀 있거나 물 위에서 시작·끝나는 경로는 만들 수 없습니다.", true);
       return;
@@ -963,7 +1025,7 @@ function endPointer(e: PointerEvent): void {
 canvas.addEventListener("pointerup", endPointer);
 canvas.addEventListener("pointercancel", endPointer);
 canvas.addEventListener("pointerleave", () => {
-  if (!painting && draggingCity < 0 && routeStart < 0 && !draggingPoint) clearOverlay();
+  if (!painting && draggingCity < 0 && routeStart < 0 && !draggingPoint && !draggingSpan) clearOverlay();
 });
 
 function restore(s: Snapshot): void {

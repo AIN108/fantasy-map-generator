@@ -117,8 +117,16 @@ export function expandStates(
 }
 
 /** 지형 비용 A*. 기존 도로 셀은 싸게 쳐서 도로가 합쳐지게 한다. 경로가 없으면 null. */
+/**
+ * 다리·터널처럼 이웃이 아닌 두 셀을 바로 잇는 연결. 셀 → [(건너편 셀, 거리당 비용 배수)].
+ * 배수는 1 이상이어야 A* 휴리스틱이 허용 가능하다.
+ */
+export interface LinkEdge { to: number; mult: number }
+export type LinkGraph = ReadonlyMap<number, readonly LinkEdge[]>;
+
 export function findPath(
   mesh: Mesh, biome: Biome[], hydro: Hydrology, start: number, goal: number, roadCells: Uint8Array,
+  links?: LinkGraph,
 ): number[] | null {
   const g = new Float64Array(mesh.count).fill(Infinity);
   const prev = new Int32Array(mesh.count).fill(-1);
@@ -130,8 +138,7 @@ export function findPath(
     const [f, i] = heap.pop()!;
     if (i === goal) break;
     if (f - h(i) > g[i] + 1e-9) continue;
-    forEachNeighbor(mesh, i, (j) => {
-      let c = stepCost(mesh, biome, hydro, i, j);
+    const relax = (j: number, c: number): void => {
       if (!Number.isFinite(c)) return;
       if (roadCells[j]) c *= 0.35;
       const ng = g[i] + c;
@@ -140,7 +147,9 @@ export function findPath(
         prev[j] = i;
         heap.push(ng + h(j), j);
       }
-    });
+    };
+    forEachNeighbor(mesh, i, (j) => relax(j, stepCost(mesh, biome, hydro, i, j)));
+    for (const link of links?.get(i) ?? []) relax(link.to, distance(mesh, i, link.to) * link.mult);
   }
   if (!Number.isFinite(g[goal])) return null;
   const path: number[] = [];
@@ -154,7 +163,7 @@ export function findPath(
  */
 export function buildRoads(
   mesh: Mesh, biome: Biome[], hydro: Hydrology, cities: City[], pairJitter: (cellA: number, cellB: number) => number,
-  maxEdgeLength: number,
+  maxEdgeLength: number, links?: LinkGraph,
 ): number[][] {
   if (cities.length < 2) return [];
   const pts = cities.flatMap((c) => [mesh.x[c.cell], mesh.y[c.cell]]);
@@ -189,7 +198,7 @@ export function buildRoads(
   // 수도가 낀 간선부터 깔아야 주요 간선도로가 먼저 생기고 지선이 거기에 붙는다.
   chosen.sort((p, q) => Number(cities[q[0]].capital || cities[q[1]].capital) - Number(cities[p[0]].capital || cities[p[1]].capital));
   for (const [a, b] of chosen) {
-    const path = findPath(mesh, biome, hydro, cities[a].cell, cities[b].cell, roadCells);
+    const path = findPath(mesh, biome, hydro, cities[a].cell, cities[b].cell, roadCells, links);
     if (!path || path.length < 2) continue;
     for (const c of path) roadCells[c] = 1;
     roads.push(path);
