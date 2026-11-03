@@ -70,27 +70,59 @@
         </form>
 
         <fieldset class="editor" id="editor">
-          <legend>지형 편집</legend>
+          <legend>편집</legend>
           <label class="toggle"><input type="checkbox" id="editMode" /> 편집 모드 <kbd>E</kbd></label>
-          <div class="tools" role="radiogroup" aria-label="브러시 도구">
-            <label><input type="radio" name="tool" value="raise" checked /> 융기</label>
-            <label><input type="radio" name="tool" value="lower" /> 침강</label>
-            <label><input type="radio" name="tool" value="flatten" /> 평탄화</label>
-            <label><input type="radio" name="tool" value="smooth" /> 부드럽게</label>
+          <div class="tabs" role="tablist" aria-label="편집 대상">
+            <button type="button" role="tab" data-target="terrain" aria-selected="true">지형</button>
+            <button type="button" role="tab" data-target="city" aria-selected="false">도시</button>
+            <button type="button" role="tab" data-target="border" aria-selected="false">국경</button>
           </div>
+
+          <div class="tab-panel" data-panel="terrain">
+            <div class="tools" role="radiogroup" aria-label="지형 도구">
+              <label><input type="radio" name="tool" value="raise" checked /> 융기</label>
+              <label><input type="radio" name="tool" value="lower" /> 침강</label>
+              <label><input type="radio" name="tool" value="flatten" /> 평탄화</label>
+              <label><input type="radio" name="tool" value="smooth" /> 부드럽게</label>
+            </div>
+          </div>
+
+          <div class="tab-panel" data-panel="city" hidden>
+            <div class="tools" role="radiogroup" aria-label="도시 도구">
+              <label><input type="radio" name="cityTool" value="move" checked /> 이동</label>
+              <label><input type="radio" name="cityTool" value="add" /> 추가</label>
+              <label><input type="radio" name="cityTool" value="delete" /> 삭제</label>
+              <label><input type="radio" name="cityTool" value="rename" /> 이름 바꾸기</label>
+              <label><input type="radio" name="cityTool" value="capital" /> 수도 지정</label>
+            </div>
+          </div>
+
+          <div class="tab-panel" data-panel="border" hidden>
+            <label class="field">
+              <span>칠할 국가</span>
+              <select id="paintState"></select>
+            </label>
+            <button type="button" id="renameState" class="wide">선택한 국가 이름 바꾸기</button>
+          </div>
+
           <p class="hint" id="toolHint"></p>
-          <label class="field">
-            <span>브러시 크기 <output id="brushSizeOut"></output></span>
-            <input id="brushSize" type="range" min="10" max="160" step="5" value="45" />
-          </label>
-          <label class="field">
-            <span>세기 <output id="brushStrengthOut"></output></span>
-            <input id="brushStrength" type="range" min="0.1" max="1" step="0.05" value="0.5" />
-          </label>
+          <div id="brushFields">
+            <label class="field">
+              <span>브러시 크기 <output id="brushSizeOut"></output></span>
+              <input id="brushSize" type="range" min="10" max="160" step="5" value="45" />
+            </label>
+            <label class="field" id="strengthField">
+              <span>세기 <output id="brushStrengthOut"></output></span>
+              <input id="brushStrength" type="range" min="0.1" max="1" step="0.05" value="0.5" />
+            </label>
+          </div>
           <div class="row">
             <button type="button" id="undo" title="되돌리기 (Ctrl+Z)">되돌리기</button>
             <button type="button" id="redo" title="다시 하기 (Ctrl+Shift+Z)">다시 하기</button>
-            <button type="button" id="resetEdits" title="시드 지형으로 되돌리기">편집 초기화</button>
+          </div>
+          <div class="row">
+            <button type="button" id="resetEdits" title="시드 지형으로 되돌리기">지형 초기화</button>
+            <button type="button" id="resetCiv" title="직접 편집한 도시·국경을 버리고 자동 배치로">자동 배치로</button>
           </div>
         </fieldset>
 

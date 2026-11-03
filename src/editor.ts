@@ -69,32 +69,37 @@ export function applyBrush(
   return true;
 }
 
-/** 스트로크 단위 되돌리기/다시하기. 고도 스냅샷을 보관한다 (9,000셀 기준 1단계 약 72KB). */
-export class EditHistory {
-  private undoStack: Float64Array[] = [];
-  private redoStack: Float64Array[] = [];
+/**
+ * 편집 단위 되돌리기/다시하기. 편집 직전 상태의 스냅샷을 보관한다.
+ * 스냅샷 타입은 자유롭게 정할 수 있다 (기본은 고도 배열, 화면에서는 고도+문명 묶음).
+ */
+export class EditHistory<T = Float64Array> {
+  private undoStack: T[] = [];
+  private redoStack: T[] = [];
   private readonly limit: number;
+  private readonly copy: (t: T) => T;
 
-  constructor(limit = 50) {
+  constructor(limit = 50, copy: (t: T) => T = (t) => Float64Array.from(t as Float64Array) as T) {
     this.limit = limit;
+    this.copy = copy;
   }
 
-  /** 스트로크를 시작하기 직전 상태를 기록한다. */
-  record(elevation: Float64Array): void {
-    this.undoStack.push(Float64Array.from(elevation));
+  /** 편집을 시작하기 직전 상태를 기록한다. */
+  record(state: T): void {
+    this.undoStack.push(this.copy(state));
     if (this.undoStack.length > this.limit) this.undoStack.shift();
     this.redoStack = [];
   }
 
-  undo(current: Float64Array): Float64Array | undefined {
+  undo(current: T): T | undefined {
     const prev = this.undoStack.pop();
-    if (prev) this.redoStack.push(Float64Array.from(current));
+    if (prev) this.redoStack.push(this.copy(current));
     return prev;
   }
 
-  redo(current: Float64Array): Float64Array | undefined {
+  redo(current: T): T | undefined {
     const next = this.redoStack.pop();
-    if (next) this.undoStack.push(Float64Array.from(current));
+    if (next) this.undoStack.push(this.copy(current));
     return next;
   }
 

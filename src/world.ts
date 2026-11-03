@@ -9,6 +9,7 @@ import { computeHydrology, extractRivers, type Hydrology } from "./hydrology.ts"
 import { buildMesh, type Mesh } from "./mesh.ts";
 import { NameGenerator, type NameStyle } from "./names.ts";
 import { cellHash, subRng } from "./rng.ts";
+import { civFromJSON, civToJSON, type CivState } from "./civedit.ts";
 import { generateElevation } from "./terrain.ts";
 
 export interface WorldOptions {
@@ -104,9 +105,11 @@ export function generateWorld(input: Partial<WorldOptions> = {}): WorldMap {
  * 주어진 메시·고도(시드 지형이든 사용자가 편집한 지형이든)에서 기후·수계·생태·문명을 계산한다.
  * natureOnly면 문명(도시·국가·도로·지명)을 건너뛴다. 브러시로 칠하는 동안의 빠른 미리보기용.
  * prior를 주면 같은 자리에 있는 국가·도시·강·봉우리가 이전 이름(국가는 색까지)을 물려받는다.
+ * civ를 주면 도시·국가·국경을 자동 배치하지 않고 사용자가 편집한 값을 그대로 쓴다.
  */
 export function deriveWorld(
   options: WorldOptions, mesh: Mesh, elevation: Float64Array, natureOnly = false, prior?: NameAnchors,
+  civ?: CivState,
 ): WorldMap {
   validateOptions(options);
   if (elevation.length !== mesh.count) {
@@ -157,6 +160,12 @@ export function deriveWorld(
   const cityCells = [...capitals, ...towns];
   const namedRivers = [...rivers].filter((r) => r.cells.length >= 8).sort((a, b) => b.flux - a.flux).slice(0, 8);
   const peakCells = findPeaks(mesh, elevation, 6, capitalSpacing * 0.6);
+
+  if (civ) {
+    return deriveEditedCiv(options, mesh, elevation, biome, hydro, civ, {
+      temperature, moisture, rivers, namedRivers, peakCells, capitalSpacing, prior,
+    });
+  }
 
   // 이전 지도의 이름을 물려받을 대상을 먼저 정하고, 물려받은 이름을 예약한 뒤 나머지에만 새 이름을 붙인다.
   const usePrior = prior && prior.nameStyle === options.nameStyle ? prior : undefined;
@@ -209,6 +218,73 @@ export function deriveWorld(
   const peaks: Peak[] = peakCells.map((cell) => ({ cell, name: inherit?.peaks.get(cell) ?? names.next("mountain") }));
 
   return { options, mesh, elevation, temperature, moisture, biome, hydro, rivers, owner, states, cities, roads, peaks };
+}
+
+/**
+ * 사용자가 편집한 문명(civ)으로 국가·도시·도로를 만든다. 바다·호수가 된 셀은 무소속으로,
+ * 물에 잠긴 도시는 숨긴다 (civ에는 남겨 두어 땅이 다시 생기면 돌아오게 한다).
+ */
+function deriveEditedCiv(
+  options: WorldOptions, mesh: Mesh, elevation: Float64Array, biome: Biome[], hydro: Hydrology, civ: CivState,
+  rest: {
+    temperature: Float64Array; moisture: Float64Array; rivers: River[]; namedRivers: River[];
+    peakCells: number[]; capitalSpacing: number; prior?: NameAnchors;
+  },
+): WorldMap {
+  const style = options.nameStyle;
+  const habitable = (i: number): boolean => elevation[i] > 0 && !hydro.isLake[i];
+  const owner = new Int32Array(mesh.count);
+  for (let i = 0; i < mesh.count; i++) {
+    const o = civ.owner[i] ?? -1;
+    owner[i] = habitable(i) && o >= 0 && o < civ.states.length ? o : -1;
+  }
+  const capitalCells = new Set(civ.states.map((s) => civ.cities[s.capitalCity]?.cell));
+  const labelCells = stateLabelCells(mesh, owner, civ.states.length);
+  const states: State[] = civ.states.map((s, id) => {
+    const cap = civ.cities[s.capitalCity]?.cell ?? -1;
+    return {
+      id,
+      name: s.names[style] ?? `국가 ${id + 1}`,
+      capitalCell: cap,
+      color: s.color,
+      labelCell: labelCells[id] >= 0 ? labelCells[id] : cap,
+      cellCount: 0,
+    };
+  });
+  for (let i = 0; i < mesh.count; i++) if (owner[i] >= 0) states[owner[i]].cellCount++;
+
+  const cities: City[] = civ.cities
+    .filter((c) => c.cell >= 0 && c.cell < mesh.count && habitable(c.cell))
+    .map((c) => ({
+      cell: c.cell,
+      name: c.names[style] ?? "이름 없음",
+      capital: capitalCells.has(c.cell),
+      state: owner[c.cell],
+      coastal: isCoastal(mesh, elevation, c.cell),
+      riverside: hydro.isRiver[c.cell] === 1,
+    }));
+
+  const pairHash = cellHash(options.seed, "roads");
+  const roads = buildRoads(mesh, biome, hydro, cities, (a, b) => pairHash(Math.min(a, b) * 65536 + Math.max(a, b)), rest.capitalSpacing * 1.2);
+
+  // 강·봉우리는 자동 배치 때와 같은 방식으로 이름을 유지하되, 국가·도시 이름과 겹치지 않게 한다.
+  const usePrior = rest.prior && rest.prior.nameStyle === style ? rest.prior : undefined;
+  const inherit = usePrior
+    ? matchAnchors(mesh, usePrior, {
+      capitals: [], owner, cityCells: [], namedRivers: rest.namedRivers, peakCells: rest.peakCells,
+      capitalSpacing: rest.capitalSpacing,
+    })
+    : undefined;
+  const names = new NameGenerator(subRng(options.seed, `names:${style}:nature`), style);
+  for (const n of [...states.map((s) => s.name), ...cities.map((c) => c.name)]) names.reserve(n);
+  if (inherit) for (const n of [...inherit.rivers.values(), ...inherit.peaks.values()]) names.reserve(n);
+  rest.namedRivers.forEach((r, k) => { r.name = inherit?.rivers.get(k) ?? names.next("river"); });
+  const peaks: Peak[] = rest.peakCells.map((cell) => ({ cell, name: inherit?.peaks.get(cell) ?? names.next("mountain") }));
+
+  return {
+    options, mesh, elevation, temperature: rest.temperature, moisture: rest.moisture, biome, hydro,
+    rivers: rest.rivers, owner, states, cities, roads, peaks,
+  };
 }
 
 // ── 이름 유지 ─────────────────────────────────────────────────────────
@@ -368,7 +444,7 @@ export function sanitizeAnchors(data: unknown): NameAnchors | undefined {
 }
 
 /** 다른 프로젝트(TRPG·경제 시뮬레이터 등)에서 불러 쓰기 위한 JSON 내보내기 */
-export function toJSON(world: WorldMap): object {
+export function toJSON(world: WorldMap, civ?: CivState): object {
   const { mesh } = world;
   const round = (v: number): number => Math.round(v * 1000) / 1000;
   return {
@@ -390,6 +466,8 @@ export function toJSON(world: WorldMap): object {
     rivers: world.rivers.filter((r) => r.name).map((r) => ({ name: r.name, cells: r.cells })),
     roads: world.roads,
     peaks: world.peaks,
+    // 문명을 직접 편집한 지도면 편집 내용(지명 스타일별 이름 포함)을 함께 저장한다.
+    ...(civ ? { civ: civToJSON(civ) } : {}),
   };
 }
 
@@ -397,7 +475,9 @@ export function toJSON(world: WorldMap): object {
  * toJSON으로 저장한 지도를 다시 읽어 옵션과 (편집된) 고도를 돌려준다.
  * 외부 파일이므로 형식·범위를 검증하고, 메시를 다시 만들어 셀 수가 맞는지 확인한다.
  */
-export function parseMapJSON(data: unknown): { options: WorldOptions; elevation: Float64Array; mesh: Mesh; anchors?: NameAnchors } {
+export function parseMapJSON(
+  data: unknown,
+): { options: WorldOptions; elevation: Float64Array; mesh: Mesh; anchors?: NameAnchors; civ?: CivState } {
   const fail = (msg: string): never => { throw new Error(`지도 파일을 읽을 수 없습니다: ${msg}`); };
   if (typeof data !== "object" || data === null) fail("JSON 객체가 아닙니다.");
   const obj = data as Record<string, unknown>;
@@ -430,7 +510,12 @@ export function parseMapJSON(data: unknown): { options: WorldOptions; elevation:
   const anchors = sanitizeAnchors({
     nameStyle: options.nameStyle, states: obj.states, cities: obj.cities, rivers: obj.rivers, peaks: obj.peaks,
   });
-  return { options, elevation, mesh, anchors };
+  let civ: CivState | undefined;
+  if (obj.civ !== undefined) {
+    civ = civFromJSON(obj.civ, mesh.count);
+    if (!civ) fail("편집한 문명(civ) 정보가 올바르지 않습니다.");
+  }
+  return { options, elevation, mesh, anchors, civ };
 }
 
 /**
