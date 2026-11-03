@@ -1,5 +1,5 @@
 import { BIOME_INFO } from "./climate.ts";
-import { FACILITY_INFO, pathMarks, type FacilityKind } from "./infra.ts";
+import { FACILITY_INFO, pathMarks, type FacilityKind, type SpanMode } from "./infra.ts";
 import { forEachNeighbor, type Mesh } from "./mesh.ts";
 import type { WorldMap } from "./world.ts";
 
@@ -297,12 +297,18 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
   // 5-2) 직접 놓은 다리·터널: 도로·철도보다 먼저 그려 그 위로 길이 지나가게 한다
   // (도로·철도 레이어 중 하나라도 켜져 있으면 그린다)
   if (layers.roads || layers.rails) {
-    for (const s of world.tunnels) drawTunnelSpan(ctx, mesh.x[s.a], mesh.y[s.a], mesh.x[s.b], mesh.y[s.b]);
-    for (const s of world.bridges) drawBridgeSpan(ctx, mesh.x[s.a], mesh.y[s.a], mesh.x[s.b], mesh.y[s.b]);
+    for (const s of world.tunnels) {
+      if (s.mode === "rail" ? layers.rails : layers.roads) drawTunnelSpan(ctx, mesh.x[s.a], mesh.y[s.a], mesh.x[s.b], mesh.y[s.b], s.mode);
+    }
+    for (const s of world.bridges) {
+      if (s.mode === "rail" ? layers.rails : layers.roads) drawBridgeSpan(ctx, mesh.x[s.a], mesh.y[s.a], mesh.x[s.b], mesh.y[s.b], s.mode);
+    }
   }
-  // 터널 연결 구간은 길 선을 그리지 않는다 (땅속이므로 터널 표기만 보이게)
-  const tunnelPairs = new Set(world.tunnels.flatMap((t) => [`${t.a}>${t.b}`, `${t.b}>${t.a}`]));
-  const outsideTunnels = (path: number[]): number[][] => {
+  // 터널 연결 구간은 길 선을 그리지 않는다 (땅속이므로 터널 표기만 보이게). 용도별로 따로 본다.
+  const tunnelPairsOf = (mode: SpanMode): Set<string> =>
+    new Set(world.tunnels.filter((t) => t.mode === mode).flatMap((t) => [`${t.a}>${t.b}`, `${t.b}>${t.a}`]));
+  const roadTunnels = tunnelPairsOf("road"), railTunnels = tunnelPairsOf("rail");
+  const outsideTunnels = (path: number[], tunnelPairs: Set<string>): number[][] => {
     const pieces: number[][] = [];
     let cur: number[] = [path[0]];
     for (let k = 1; k < path.length; k++) {
@@ -321,7 +327,7 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
     ctx.lineWidth = 1.1;
     ctx.setLineDash([3, 2]);
     for (const road of world.roads) {
-      for (const piece of outsideTunnels(road)) {
+      for (const piece of outsideTunnels(road, roadTunnels)) {
         smoothPath(ctx, mesh, piece);
         ctx.stroke();
       }
@@ -345,7 +351,7 @@ export function renderWorld(ctx: CanvasRenderingContext2D, world: WorldMap, cach
         from = b;
       }
       if (from < rail.length - 1) pieces.push(rail.slice(from));
-      for (const piece of pieces.flatMap(outsideTunnels)) {
+      for (const piece of pieces.flatMap((pc) => outsideTunnels(pc, railTunnels))) {
         if (piece.length < 2) continue;
         smoothPath(ctx, mesh, piece);
         ctx.strokeStyle = "#2b2b2b";
@@ -490,15 +496,28 @@ function drawBridge(ctx: CanvasRenderingContext2D, mesh: Mesh, path: number[], k
   ctx.restore();
 }
 
-/** 직접 놓은 다리: 두 점 사이 상판과 난간, 양 끝 날개 */
-export function drawBridgeSpan(ctx: CanvasRenderingContext2D, ax: number, ay: number, bx: number, by: number): void {
+/**
+ * 직접 놓은 다리: 두 점 사이 상판과 난간, 양 끝 날개.
+ * 도로용은 밝은 상판, 철도용은 어두운 상판에 침목 무늬로 구분한다.
+ */
+export function drawBridgeSpan(
+  ctx: CanvasRenderingContext2D, ax: number, ay: number, bx: number, by: number, mode: SpanMode = "road",
+): void {
   const len = Math.hypot(bx - ax, by - ay);
   ctx.save();
   ctx.translate(ax, ay);
   ctx.rotate(Math.atan2(by - ay, bx - ax));
-  ctx.fillStyle = "rgba(244,241,234,0.95)";
+  ctx.fillStyle = mode === "rail" ? "#4a4a4a" : "rgba(244,241,234,0.95)";
   ctx.fillRect(-2, -2.6, len + 4, 5.2);
-  ctx.strokeStyle = "#3a2f25";
+  if (mode === "rail") {
+    // 침목: 상판을 가로지르는 짧은 밝은 선
+    ctx.strokeStyle = "rgba(244,241,234,0.85)";
+    ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    for (let px = 1; px < len; px += 4) { ctx.moveTo(px, -1.8); ctx.lineTo(px, 1.8); }
+    ctx.stroke();
+  }
+  ctx.strokeStyle = mode === "rail" ? "#1e1e1e" : "#3a2f25";
   ctx.lineWidth = 1.2;
   ctx.lineCap = "round";
   ctx.beginPath();
@@ -517,11 +536,13 @@ export function drawBridgeSpan(ctx: CanvasRenderingContext2D, ax: number, ay: nu
   ctx.restore();
 }
 
-/** 직접 놓은 터널: 두 점 사이 회색 점선과 양 끝 입구 */
-export function drawTunnelSpan(ctx: CanvasRenderingContext2D, ax: number, ay: number, bx: number, by: number): void {
+/** 직접 놓은 터널: 두 점 사이 점선과 양 끝 입구. 도로용은 갈색, 철도용은 짙은 회색 점선. */
+export function drawTunnelSpan(
+  ctx: CanvasRenderingContext2D, ax: number, ay: number, bx: number, by: number, mode: SpanMode = "road",
+): void {
   const angle = Math.atan2(by - ay, bx - ax);
   ctx.save();
-  ctx.strokeStyle = "rgba(60,60,60,0.8)";
+  ctx.strokeStyle = mode === "rail" ? "rgba(40,40,40,0.85)" : "rgba(110,70,40,0.85)";
   ctx.lineWidth = 1.5;
   ctx.setLineDash([2, 3]);
   ctx.beginPath();

@@ -44,10 +44,14 @@ export interface Infra {
   hiddenMarks: number[];
 }
 
-/** 두 셀(a, b) 사이의 곧은 구간 */
+export type SpanMode = "road" | "rail";
+export const SPAN_MODE_KO: Record<SpanMode, string> = { road: "도로", rail: "철도" };
+
+/** 두 셀(a, b) 사이의 곧은 구간. mode: 도로용·철도용 (도로는 도로용만, 철도는 철도용만 건넌다) */
 export interface Span {
   a: number;
   b: number;
+  mode: SpanMode;
 }
 
 /** 직접 놓는 다리·터널의 최대 길이 (지도 좌표) */
@@ -105,10 +109,12 @@ export const BRIDGE_COST = 1.1;
 export const SPAN_TUNNEL_COST = 1.5;
 
 /**
- * 양 끝이 모두 육지인 다리·터널로 경로 그래프의 추가 연결을 만든다 (양방향).
- * 도로·철도 경로 계산과 자동 도로가 이 연결을 길로 쓴다.
+ * 양 끝이 모두 육지이고 용도(mode)가 맞는 다리·터널로 경로 그래프의 추가 연결을 만든다 (양방향).
+ * 도로 경로·자동 도로는 도로용을, 철도 경로는 철도용을 길로 쓴다.
  */
-export function spanLinks(t: Terrain, spans: { bridges: readonly Span[]; tunnels: readonly Span[] }): LinkGraph {
+export function spanLinks(
+  t: Terrain, spans: { bridges: readonly Span[]; tunnels: readonly Span[] }, mode: SpanMode,
+): LinkGraph {
   const graph = new Map<number, LinkEdge[]>();
   const add = (from: number, to: number, mult: number): void => {
     const list = graph.get(from) ?? [];
@@ -117,7 +123,7 @@ export function spanLinks(t: Terrain, spans: { bridges: readonly Span[]; tunnels
   };
   for (const [list, mult] of [[spans.bridges, BRIDGE_COST], [spans.tunnels, SPAN_TUNNEL_COST]] as const) {
     for (const s of list) {
-      if (!onLand(t, s.a) || !onLand(t, s.b)) continue;
+      if (s.mode !== mode || !onLand(t, s.a) || !onLand(t, s.b)) continue;
       add(s.a, s.b, mult);
       add(s.b, s.a, mult);
     }
@@ -239,24 +245,28 @@ export function addSeaRoute(infra: Infra, path: number[]): EditResult {
  * 다리·터널을 직접 놓는다. 양 끝은 육지(호수 제외)여야 하고 길이는 MAX_SPAN_LENGTH 이하.
  * 다리는 그 사이에 물(바다·호수·강)이 하나 이상 있어야 하고, 터널은 사이가 어떤 지형이든 된다 (해저 터널 포함).
  */
-export function addSpan(t: Terrain, infra: Infra, kind: "bridge" | "tunnel", a: number, b: number): EditResult {
+export function addSpan(
+  t: Terrain, infra: Infra, kind: "bridge" | "tunnel", a: number, b: number, mode: SpanMode = "road",
+): EditResult {
   const list = kind === "bridge" ? infra.bridges : infra.tunnels;
   if (list.length >= MAX_PATHS) return `${kind === "bridge" ? "다리" : "터널"}는 ${MAX_PATHS}개까지 놓을 수 있습니다.`;
-  const error = validateSpan(t, infra, kind, a, b);
+  const error = validateSpan(t, infra, kind, a, b, mode);
   if (error) return error;
-  list.push({ a, b });
+  list.push({ a, b, mode });
   return null;
 }
 
 /** 다리·터널 위치 검사 (놓기·옮기기 공용). except는 옮기는 중인 자기 자신의 번호. */
-function validateSpan(t: Terrain, infra: Infra, kind: "bridge" | "tunnel", a: number, b: number, except = -1): EditResult {
-  const label = kind === "bridge" ? "다리" : "터널";
+function validateSpan(
+  t: Terrain, infra: Infra, kind: "bridge" | "tunnel", a: number, b: number, mode: SpanMode, except = -1,
+): EditResult {
+  const label = `${SPAN_MODE_KO[mode]} ${kind === "bridge" ? "다리" : "터널"}`;
   if (a === b) return `${label}의 양 끝이 같습니다. 끌어서 두 지점을 이어 주세요.`;
   if (!onLand(t, a) || !onLand(t, b)) return `${label}의 양 끝은 육지여야 합니다.`;
   const len = distance(t.mesh, a, b);
   if (len > MAX_SPAN_LENGTH) return `${label}는 ${MAX_SPAN_LENGTH}px까지 놓을 수 있습니다 (지금 ${Math.round(len)}px).`;
   const list = kind === "bridge" ? infra.bridges : infra.tunnels;
-  if (list.some((s, i) => i !== except && ((s.a === a && s.b === b) || (s.a === b && s.b === a)))) {
+  if (list.some((s, i) => i !== except && s.mode === mode && ((s.a === a && s.b === b) || (s.a === b && s.b === a)))) {
     return `같은 자리에 이미 ${label}가 있습니다.`;
   }
   if (kind === "bridge" && !spanCells(t.mesh, a, b).some((c) => !onLand(t, c) || t.hydro.isRiver[c])) {
@@ -295,16 +305,36 @@ export function hitSpan(
   return { kind, index, part };
 }
 
-/** 다리·터널의 끝을 새 셀로 옮긴다 (몸통을 옮길 때는 a, b를 둘 다 바꿔 준다). 놓을 때와 같은 조건으로 검사. */
-export function moveSpan(t: Terrain, infra: Infra, kind: "bridge" | "tunnel", index: number, a: number, b: number): EditResult {
+/**
+ * 다리·터널의 끝을 새 셀로 옮긴다 (몸통을 옮길 때는 a, b를 둘 다 바꿔 준다). 놓을 때와 같은 조건으로 검사.
+ * 그 다리·터널을 지나던 같은 용도의 도로·철도는 원래 출발점·도착점을 그대로 두고 새 자리 기준으로 다시 계산한다
+ * (각 경로는 한 번 끌어 만든 출발→도착 경로이므로, 같은 두 점을 다시 잇는 것과 같다).
+ * 새 자리로 이어지지 않는 경로는 그대로 두며(끊겨 그려진다) result.broken에 개수를 센다.
+ */
+export function moveSpan(
+  t: Terrain, infra: Infra, kind: "bridge" | "tunnel", index: number, a: number, b: number,
+  result: { rerouted: number; broken: number } = { rerouted: 0, broken: 0 },
+): EditResult {
   const list = kind === "bridge" ? infra.bridges : infra.tunnels;
   const span = list[index];
   if (!span) return `${kind === "bridge" ? "다리" : "터널"}를 찾을 수 없습니다.`;
   if (span.a === a && span.b === b) return null;
-  const error = validateSpan(t, infra, kind, a, b, index);
+  const error = validateSpan(t, infra, kind, a, b, span.mode, index);
   if (error) return error;
+  const [oldA, oldB] = [span.a, span.b];
   span.a = a;
   span.b = b;
+
+  const usesOld = (p: number[]): boolean => p.some((c, k) => k > 0
+    && ((p[k - 1] === oldA && c === oldB) || (p[k - 1] === oldB && c === oldA)));
+  const paths = span.mode === "road" ? infra.roads : infra.rails;
+  if (!paths) return null; // 자동 도로는 다시 계산할 때 새 다리를 알아서 쓴다
+  const links = spanLinks(t, infra, span.mode);
+  for (let k = 0; k < paths.length; k++) {
+    if (!usesOld(paths[k])) continue;
+    const next = routePath(t, paths[k][0], paths[k][paths[k].length - 1], span.mode, links);
+    if (next && next.length >= 2) { paths[k] = next; result.rerouted++; } else result.broken++;
+  }
   return null;
 }
 
@@ -515,8 +545,8 @@ export function eraseAt(
     if (d <= r2 && (!span || d < span.d)) span = { kind: "tunnel", index, d };
   });
   if (span) {
-    (span.kind === "bridge" ? infra.bridges : infra.tunnels).splice(span.index, 1);
-    return span.kind === "bridge" ? "다리" : "터널";
+    const [removed] = (span.kind === "bridge" ? infra.bridges : infra.tunnels).splice(span.index, 1);
+    return `${SPAN_MODE_KO[removed.mode]} ${span.kind === "bridge" ? "다리" : "터널"}`;
   }
 
   // 자동 다리·터널 표기: 지우지 않고 그 셀을 숨김 목록에 넣는다
@@ -592,8 +622,7 @@ export function visibleInfra(t: Terrain, infra: Infra, autoRoads: number[][]): {
 } {
   // 다리·터널을 옮기거나 지우면 그 위를 지나던 경로에 '이웃도 연결도 아닌' 건너뜀이 남는다:
   // 그 지점에서도 끊어서, 물 위에 허공의 선이 남지 않게 한다.
-  const links = spanLinks(t, infra);
-  const split = (paths: number[][]): number[][] => paths.flatMap((p) => {
+  const split = (paths: number[][], links: LinkGraph): number[][] => paths.flatMap((p) => {
     const out: number[][] = [];
     let cur: number[] = [];
     for (const c of p) {
@@ -608,8 +637,8 @@ export function visibleInfra(t: Terrain, infra: Infra, autoRoads: number[][]): {
     return out;
   });
   return {
-    roads: infra.roads ? split(infra.roads) : autoRoads,
-    rails: split(infra.rails),
+    roads: infra.roads ? split(infra.roads, spanLinks(t, infra, "road")) : autoRoads,
+    rails: split(infra.rails, spanLinks(t, infra, "rail")),
     // 항로는 지형 편집으로 중간 바다가 땅이 되면 통째로 숨긴다 (끊긴 항로는 의미가 없다)
     seaRoutes: infra.seaRoutes.filter((r) => r.slice(1, -1).every((c) => t.elevation[c] <= 0)),
     ports: infra.ports.filter((p) => onLand(t, p.cell)),
@@ -673,7 +702,10 @@ export function infraFromJSON(data: unknown, cellCount: number): Infra | undefin
     for (const raw of v) {
       const sp = raw as Record<string, unknown> | null;
       if (!sp || !cell(sp.a) || !cell(sp.b) || sp.a === sp.b) return undefined;
-      out.push({ a: sp.a, b: sp.b });
+      // 용도가 없던 예전 형식은 도로용으로 읽는다
+      const mode = sp.mode === undefined ? "road" : sp.mode;
+      if (mode !== "road" && mode !== "rail") return undefined;
+      out.push({ a: sp.a, b: sp.b, mode });
     }
     return out;
   };

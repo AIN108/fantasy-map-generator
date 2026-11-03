@@ -408,7 +408,7 @@ describe("다리·터널 직접 놓기", () => {
     const [wa, wb] = acrossWater();
     addSpan(world, infra, "bridge", wa, wb);
     const mx = (mesh.x[wa] + mesh.x[wb]) / 2, my = (mesh.y[wa] + mesh.y[wb]) / 2;
-    assert.equal(eraseAt(mesh, infra, mx, my, 8, [], world), "다리");
+    assert.equal(eraseAt(mesh, infra, mx, my, 8, [], world), "도로 다리");
     assert.equal(infra.bridges.length, 0);
   });
 
@@ -491,11 +491,30 @@ describe("다리·터널을 길로 쓰기", () => {
     assert.equal(routePath(aw, startCell, goalCell, "rail"), null);
   });
 
+  test("도로용 다리는 도로만, 철도용 다리는 철도만 건넌다", () => {
+    const roadOnly = emptyInfra();
+    assert.equal(addSpan(aw, roadOnly, "bridge", ia, ib, "road"), null);
+    assert.ok(routePath(aw, startCell, goalCell, "road", spanLinks(aw, roadOnly, "road")));
+    assert.equal(routePath(aw, startCell, goalCell, "rail", spanLinks(aw, roadOnly, "rail")), null, "철도는 도로용 다리를 못 건넌다");
+    const railOnly = emptyInfra();
+    assert.equal(addSpan(aw, railOnly, "bridge", ia, ib, "rail"), null);
+    assert.ok(routePath(aw, startCell, goalCell, "rail", spanLinks(aw, railOnly, "rail")));
+    assert.equal(routePath(aw, startCell, goalCell, "road", spanLinks(aw, railOnly, "road")), null, "도로는 철도용 다리를 못 건넌다");
+  });
+
+  test("같은 자리에 도로용·철도용 다리를 하나씩 둘 수 있고, 같은 용도는 중복 거부", () => {
+    const infra = emptyInfra();
+    assert.equal(addSpan(aw, infra, "bridge", ia, ib, "road"), null);
+    assert.equal(addSpan(aw, infra, "bridge", ia, ib, "rail"), null);
+    assert.match(addSpan(aw, infra, "bridge", ib, ia, "rail")!, /이미/);
+  });
+
   test("다리를 놓으면 도로·철도가 그 다리를 건너 이어진다", () => {
     const infra = emptyInfra();
-    assert.equal(addSpan(aw, infra, "bridge", ia, ib), null);
-    const links = spanLinks(aw, infra);
+    assert.equal(addSpan(aw, infra, "bridge", ia, ib, "road"), null);
+    assert.equal(addSpan(aw, infra, "bridge", ia, ib, "rail"), null);
     for (const mode of ["road", "rail"] as const) {
+      const links = spanLinks(aw, infra, mode);
       const path = routePath(aw, startCell, goalCell, mode, links);
       assert.ok(path, `${mode}: 다리를 건너는 경로가 없음`);
       const k = path.findIndex((c, i) => i > 0 && ((path[i - 1] === ia && c === ib) || (path[i - 1] === ib && c === ia)));
@@ -507,7 +526,7 @@ describe("다리·터널을 길로 쓰기", () => {
   test("터널도 길로 쓴다", () => {
     const infra = emptyInfra();
     assert.equal(addSpan(aw, infra, "tunnel", ia, ib), null);
-    assert.ok(routePath(aw, startCell, goalCell, "road", spanLinks(aw, infra)));
+    assert.ok(routePath(aw, startCell, goalCell, "road", spanLinks(aw, infra, "road")));
   });
 
   test("자동 도로 경로 계산(findPath)도 다리를 건넌다", () => {
@@ -515,14 +534,14 @@ describe("다리·터널을 길로 쓰기", () => {
     addSpan(aw, infra, "bridge", ia, ib);
     const roadCells = new Uint8Array(am.count);
     assert.equal(findPath(am, aw.biome, aw.hydro, startCell, goalCell, roadCells), null);
-    const path = findPath(am, aw.biome, aw.hydro, startCell, goalCell, roadCells, spanLinks(aw, infra));
+    const path = findPath(am, aw.biome, aw.hydro, startCell, goalCell, roadCells, spanLinks(aw, infra, "road"));
     assert.ok(path && path.includes(ia) && path.includes(ib));
   });
 
   test("다리를 지우면 그 위를 지나던 도로는 끊긴 곳에서 나뉘어 그려진다", () => {
     const infra = emptyInfra();
     addSpan(aw, infra, "bridge", ia, ib);
-    const path = routePath(aw, startCell, goalCell, "road", spanLinks(aw, infra))!;
+    const path = routePath(aw, startCell, goalCell, "road", spanLinks(aw, infra, "road"))!;
     addPath(infra, "road", path, []);
     assert.equal(visibleInfra(aw, infra, []).roads.length, 1);
     infra.bridges = [];
@@ -552,7 +571,106 @@ describe("다리·터널을 길로 쓰기", () => {
     const ocean2 = aw.elevation.findIndex((e, i) => e < -0.2 && !am.isEdge[i]);
     assert.match(moveSpan(aw, infra, "bridge", 0, ia, ocean2)!, /육지/);
     assert.equal(moveSpan(aw, infra, "bridge", 0, ib, ia), null, "방향만 뒤집기");
-    assert.deepEqual(infra.bridges[0], { a: ib, b: ia });
+    assert.deepEqual(infra.bridges[0], { a: ib, b: ia, mode: "road" });
     assert.match(moveSpan(aw, infra, "tunnel", 0, ia, ib)!, /찾을 수 없/);
+  });
+});
+
+describe("다리를 옮기면 길이 따라간다", () => {
+  const AO: WorldOptions = { ...DEFAULT_OPTIONS, seed: "다리섬", cells: 4000, width: 1000, height: 700, shape: "archipelago" };
+  const am = createMesh(AO);
+  const aw = deriveWorld(AO, am, createElevation(am, AO));
+  const aLand = (i: number): boolean => aw.elevation[i] > 0 && !aw.hydro.isLake[i];
+  const comp = new Int32Array(am.count).fill(-1);
+  let n = 0;
+  for (let s = 0; s < am.count; s++) {
+    if (!aLand(s) || comp[s] >= 0) continue;
+    const q = [s];
+    comp[s] = n;
+    while (q.length) {
+      const i = q.pop()!;
+      forEachNeighbor(am, i, (j) => { if (aLand(j) && comp[j] < 0) { comp[j] = n; q.push(j); } });
+    }
+    n++;
+  }
+  // 서로 다른 섬의 다리 끝 쌍과, 같은 두 섬을 잇는 두 번째(옮길 자리) 쌍
+  const pairs: [number, number][] = [];
+  for (let a = 0; a < am.count && pairs.length < 400; a++) {
+    if (!aLand(a)) continue;
+    for (let b = 0; b < am.count; b++) {
+      if (!aLand(b) || comp[a] === comp[b]) continue;
+      const d = Math.hypot(am.x[a] - am.x[b], am.y[a] - am.y[b]);
+      if (d > 40 && d < 120) pairs.push([a, b]);
+    }
+  }
+  const [ia, ib] = pairs[0];
+  const alt = pairs.find(([a, b]) => comp[a] === comp[ia] && comp[b] === comp[ib] && a !== ia && b !== ib
+    && Math.hypot(am.x[a] - am.x[ia], am.y[a] - am.y[ia]) > 15)!;
+  const inIsland = (c: number): number => Array.from({ length: am.count }, (_, i) => i)
+    .filter((i) => comp[i] === comp[c] && i !== c)
+    .sort((x, y) => Math.hypot(am.x[y] - am.x[c], am.y[y] - am.y[c]) - Math.hypot(am.x[x] - am.x[c], am.y[x] - am.y[c]))[0];
+  const start = inIsland(ia), goal = inIsland(ib);
+  const usesSpan = (p: number[], a: number, b: number): boolean =>
+    p.some((c, k) => k > 0 && ((p[k - 1] === a && c === b) || (p[k - 1] === b && c === a)));
+
+  for (const mode of ["road", "rail"] as const) {
+    test(`${mode === "road" ? "도로" : "철도"}: 다리를 옮기면 지나던 경로가 새 다리로 다시 이어진다`, () => {
+      const infra: Infra = { ...emptyInfra(), roads: [] };
+      addSpan(aw, infra, "bridge", ia, ib, mode);
+      const path = routePath(aw, start, goal, mode, spanLinks(aw, infra, mode))!;
+      addPath(infra, mode, path, []);
+      const list = mode === "road" ? infra.roads! : infra.rails;
+      const result = { rerouted: 0, broken: 0 };
+      assert.equal(moveSpan(aw, infra, "bridge", 0, alt[0], alt[1], result), null);
+      assert.deepEqual(result, { rerouted: 1, broken: 0 });
+      const moved = list[list.length - 1];
+      assert.equal(moved[0], start, "출발점은 그대로");
+      assert.equal(moved[moved.length - 1], goal, "도착점은 그대로");
+      assert.ok(usesSpan(moved, alt[0], alt[1]), "새 다리를 건넌다");
+      assert.ok(!usesSpan(moved, ia, ib), "옛 다리 자리는 지나지 않는다");
+      // 다른 용도의 경로는 건드리지 않는다
+      const other = mode === "road" ? infra.rails : infra.roads!;
+      assert.equal(other.length, 0);
+    });
+  }
+
+  test("다른 용도의 경로는 옮겨도 따라가지 않는다 (도로용 다리를 옮겨도 철도는 그대로)", () => {
+    const infra: Infra = { ...emptyInfra(), roads: [] };
+    addSpan(aw, infra, "bridge", ia, ib, "road");
+    addSpan(aw, infra, "bridge", ia, ib, "rail");
+    const rail = routePath(aw, start, goal, "rail", spanLinks(aw, infra, "rail"))!;
+    addPath(infra, "rail", rail, []);
+    const result = { rerouted: 0, broken: 0 };
+    assert.equal(moveSpan(aw, infra, "bridge", 0, alt[0], alt[1], result), null);
+    assert.deepEqual(result, { rerouted: 0, broken: 0 });
+    assert.deepEqual(infra.rails[0], rail);
+  });
+
+  test("새 자리로 이어질 수 없으면 경로를 그대로 두고 개수를 센다", () => {
+    const infra: Infra = { ...emptyInfra(), roads: [] };
+    addSpan(aw, infra, "bridge", ia, ib, "road");
+    const path = routePath(aw, start, goal, "road", spanLinks(aw, infra, "road"))!;
+    addPath(infra, "road", path, []);
+    // 같은 섬 안의 두 해안 셀로 옮기면 두 섬을 잇는 길이 없어진다
+    const sameIsland = pairs.find(([a, b]) => comp[a] === comp[ia] && comp[b] !== comp[ib]);
+    if (!sameIsland) return;
+    const result = { rerouted: 0, broken: 0 };
+    assert.equal(moveSpan(aw, infra, "bridge", 0, sameIsland[0], sameIsland[1], result), null);
+    assert.equal(result.broken, 1);
+    assert.deepEqual(infra.roads![0], path, "경로 데이터는 그대로 (화면에서는 끊겨 그려짐)");
+  });
+
+  test("용도가 없던 예전 다리·터널은 도로용으로 읽는다", () => {
+    const back = infraFromJSON({ bridges: [{ a: ia, b: ib }], tunnels: [{ a: ia, b: ib, mode: "rail" }] }, am.count)!;
+    assert.equal(back.bridges[0].mode, "road");
+    assert.equal(back.tunnels[0].mode, "rail");
+    assert.equal(infraFromJSON({ bridges: [{ a: ia, b: ib, mode: "boat" }] }, am.count), undefined);
+  });
+
+  test("지우기 메시지에 용도가 나온다", () => {
+    const infra = emptyInfra();
+    addSpan(aw, infra, "bridge", ia, ib, "rail");
+    const mx = (am.x[ia] + am.x[ib]) / 2, my = (am.y[ia] + am.y[ib]) / 2;
+    assert.equal(eraseAt(am, infra, mx, my, 8, [], aw), "철도 다리");
   });
 });
