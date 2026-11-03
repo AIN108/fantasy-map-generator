@@ -19,6 +19,7 @@ import {
   applyInfra, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors, parseMapJSON,
   sanitizeAnchors, terrainKey, toJSON, type NameAnchors, type WorldMap, type WorldOptions,
 } from "./world.ts";
+import { anchoredView, clampView, identityView, MAX_SCALE, MIN_SCALE, sameView, toMap, zoomAt, type View } from "./view.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -79,6 +80,8 @@ let nameMemory: Partial<Record<NameStyle, NameAnchors>> = {};
 let world: WorldMap | undefined;
 let cache: RenderCache | undefined;
 let layers: Layers = { ...DEFAULT_LAYERS };
+/** 확대·이동 상태. 지도 데이터와 무관한 보기 설정이라 저장·되돌리기에 넣지 않는다. */
+let view: View = identityView();
 
 /** 되돌리기 단위: 지형과 문명을 함께 보관한다. */
 interface Snapshot { elevation: Float64Array; civ?: CivState; infra: Infra }
@@ -184,8 +187,86 @@ function eul(word: string): string {
 }
 
 // ── 그리기 ───────────────────────────────────────────────────────────
+/** 지도 전체를 원래 배율로 그린 사본 (확대·이동 중 빠른 미리보기와 PNG 저장용) */
+const fullCanvas = document.createElement("canvas");
+let fullFresh = false;
+
+/** 현재 보기(확대·이동)로 지도를 선명하게 다시 그린다. */
 function draw(): void {
-  if (world && cache) renderWorld(ctx!, world, cache, layers);
+  if (!world || !cache) return;
+  clearTimeout(sharpTimer);
+  const s = view.scale;
+  ctx!.setTransform(s, 0, 0, s, -view.x * s, -view.y * s);
+  renderWorld(ctx!, world, cache, layers);
+  ctx!.setTransform(1, 0, 0, 1, 0, 0);
+  fullFresh = false;
+  if (s === 1) copyToFull(); // 전체 보기라면 방금 그린 화면이 곧 사본이다
+}
+
+function copyToFull(): void {
+  fullCanvas.width = canvas.width;
+  fullCanvas.height = canvas.height;
+  fullCanvas.getContext("2d")!.drawImage(canvas, 0, 0);
+  fullFresh = true;
+}
+
+function fullMapCanvas(): HTMLCanvasElement {
+  if (!fullFresh && world && cache) {
+    fullCanvas.width = canvas.width;
+    fullCanvas.height = canvas.height;
+    renderWorld(fullCanvas.getContext("2d")!, world, cache, layers);
+    fullFresh = true;
+  }
+  return fullCanvas;
+}
+
+// ── 확대·이동 ────────────────────────────────────────────────────────
+let sharpTimer = 0;
+let fastQueued = false;
+/** 마지막으로 마우스가 있던 캔버스 픽셀 좌표 (휠로 확대한 뒤 커서를 다시 그리기 위해) */
+let hoverPx: [number, number] | undefined;
+
+/**
+ * 보기를 바꾼다. 움직이는 동안에는 전체 사본을 늘려 빠르게 보여 주고,
+ * 잠시 멈추면 그 배율로 선명하게 다시 그린다.
+ */
+function setView(next: View): void {
+  const clamped = clampView(next, canvas.width, canvas.height);
+  if (sameView(clamped, view)) return;
+  view = clamped;
+  syncZoomUi();
+  if (!fastQueued) {
+    fastQueued = true;
+    requestAnimationFrame(() => {
+      fastQueued = false;
+      drawFast();
+      if (editMode && hoverPx) drawCursor(...toMap(view, ...hoverPx));
+      else clearOverlay();
+    });
+  }
+  clearTimeout(sharpTimer);
+  sharpTimer = window.setTimeout(draw, 140);
+}
+
+function drawFast(): void {
+  if (!world) return;
+  const src = fullMapCanvas();
+  const w = canvas.width, h = canvas.height;
+  ctx!.setTransform(1, 0, 0, 1, 0, 0);
+  ctx!.clearRect(0, 0, w, h);
+  ctx!.drawImage(src, view.x, view.y, w / view.scale, h / view.scale, 0, 0, w, h);
+}
+
+function zoomBy(factor: number): void {
+  setView(zoomAt(view, factor, canvas.width / 2, canvas.height / 2, canvas.width, canvas.height));
+}
+
+function syncZoomUi(): void {
+  mapWrap.classList.toggle("zoomed", view.scale > MIN_SCALE + 1e-6);
+  $("zoomLevel").textContent = `${Math.round(view.scale * 100)}%`;
+  $<HTMLButtonElement>("zoomIn").disabled = view.scale >= MAX_SCALE - 1e-6;
+  $<HTMLButtonElement>("zoomOut").disabled = view.scale <= MIN_SCALE + 1e-6;
+  $<HTMLButtonElement>("zoomReset").disabled = view.scale <= MIN_SCALE + 1e-6;
 }
 
 function renderLegend(w: WorldMap): void {
@@ -269,6 +350,8 @@ function derive(natureOnly = false): void {
     if (canvas.width !== options.width || canvas.height !== options.height) {
       canvas.width = overlay.width = options.width;
       canvas.height = overlay.height = options.height;
+      view = identityView();
+      syncZoomUi();
     }
     draw();
     if (natureOnly) return;
@@ -408,7 +491,7 @@ function setEditMode(on: boolean): void {
   $<HTMLInputElement>("editMode").checked = on;
   editorEl.classList.toggle("active", on);
   mapWrap.classList.toggle("editing", on);
-  if (!on) octx!.clearRect(0, 0, overlay.width, overlay.height);
+  if (!on) clearOverlay();
 }
 
 function updateHint(): void {
@@ -456,27 +539,38 @@ function setTool(tool: BrushTool): void {
   updateHint();
 }
 
-function toMapCoords(e: PointerEvent): [number, number] {
+/** 화면(client) 좌표 → 캔버스 픽셀 좌표 */
+function canvasPx(e: { clientX: number; clientY: number }): [number, number] {
   const rect = canvas.getBoundingClientRect();
   return [((e.clientX - rect.left) / rect.width) * canvas.width, ((e.clientY - rect.top) / rect.height) * canvas.height];
 }
 
-/** 화면 크기와 관계없이 손가락·마우스로 누르기 쉬운 도시 선택 반경 (지도 좌표) */
-const hitRadius = (): number => 14 * (canvas.width / Math.max(1, canvas.getBoundingClientRect().width));
+/** 화면 좌표 → 지도 좌표 (확대·이동 반영) */
+function toMapCoords(e: { clientX: number; clientY: number }): [number, number] {
+  return toMap(view, ...canvasPx(e));
+}
 
+/** 화면 크기·확대 배율과 관계없이 손가락·마우스로 누르기 쉬운 선택 반경 (지도 좌표) */
+const hitRadius = (): number => (14 * (canvas.width / Math.max(1, canvas.getBoundingClientRect().width))) / view.scale;
+
+/** 덧그림 캔버스를 비우고, 이후 그리기가 지도 좌표를 쓰도록 보기 변환을 건다. */
 function clearOverlay(): void {
+  octx!.setTransform(1, 0, 0, 1, 0, 0);
   octx!.clearRect(0, 0, overlay.width, overlay.height);
+  const s = view.scale;
+  octx!.setTransform(s, 0, 0, s, -view.x * s, -view.y * s);
 }
 
 function strokeCircle(x: number, y: number, r: number, dash: number[] = []): void {
   const o = octx!;
-  o.setLineDash(dash);
-  o.lineWidth = 2;
+  // 커서 테두리는 확대해도 화면에서 같은 굵기로 보이게 한다.
+  o.setLineDash(dash.map((d) => d / view.scale));
+  o.lineWidth = 2 / view.scale;
   o.strokeStyle = "rgba(0,0,0,0.55)";
   o.beginPath();
   o.arc(x, y, r, 0, Math.PI * 2);
   o.stroke();
-  o.lineWidth = 1;
+  o.lineWidth = 1 / view.scale;
   o.strokeStyle = "rgba(255,255,255,0.95)";
   o.stroke();
   o.setLineDash([]);
@@ -874,7 +968,7 @@ function handleCityClick(x: number, y: number): void {
   }
 }
 
-canvas.addEventListener("pointerdown", (e) => {
+function onEditPointerDown(e: PointerEvent): void {
   if (!editMode || e.button !== 0 || !mesh || !elevation || !world) return;
   e.preventDefault();
   const [x, y] = toMapCoords(e);
@@ -882,16 +976,16 @@ canvas.addEventListener("pointerdown", (e) => {
     if (infraTool === "road" || infraTool === "rail") {
       routeStart = snapToCity(x, y);
       routePreview = null;
-      canvas.setPointerCapture(e.pointerId);
+      capturePointer(e.pointerId);
     } else if (isSpanTool()) {
       routeStart = findCell(mesh, x, y);
-      canvas.setPointerCapture(e.pointerId);
+      capturePointer(e.pointerId);
     } else if (infraTool === "sea") {
       const start = snapToPort(x, y);
       if (start < 0) { setStatus("항로는 항구에서 시작합니다. 항구를 눌러 끌어 주세요.", true); return; }
       routeStart = start;
       routePreview = null;
-      canvas.setPointerCapture(e.pointerId);
+      capturePointer(e.pointerId);
     } else if (infraTool === "move") {
       draggingPoint = hitPoint(mesh, infra, x, y, hitRadius());
       if (!draggingPoint) {
@@ -899,14 +993,14 @@ canvas.addEventListener("pointerdown", (e) => {
         if (!span) { setStatus("옮길 항구·시설물·다리·터널을 눌러 끌어 주세요.", true); return; }
         draggingSpan = { ...span, grabX: x, grabY: y };
       }
-      canvas.setPointerCapture(e.pointerId);
+      capturePointer(e.pointerId);
     } else {
       handleInfraClick(x, y);
     }
     return;
   }
   if (editTarget === "terrain") {
-    canvas.setPointerCapture(e.pointerId);
+    capturePointer(e.pointerId);
     editHistory.record(snap());
     flattenTarget = elevation[findCell(mesh, x, y)];
     painting = true;
@@ -915,7 +1009,7 @@ canvas.addEventListener("pointerdown", (e) => {
   } else if (editTarget === "border") {
     borderBefore = copySnapshot(snap());
     if (!ensureCiv()) return;
-    canvas.setPointerCapture(e.pointerId);
+    capturePointer(e.pointerId);
     painting = true;
     lastPoint = undefined;
     paintBorderTo(x, y);
@@ -927,13 +1021,13 @@ canvas.addEventListener("pointerdown", (e) => {
     if (!c) return;
     draggingCity = c.cities.findIndex((cc) => cc.cell === world!.cities[visible].cell);
     borderBefore = before;
-    canvas.setPointerCapture(e.pointerId);
+    capturePointer(e.pointerId);
   } else {
     handleCityClick(x, y);
   }
-});
+}
 
-canvas.addEventListener("pointermove", (e) => {
+function onEditPointerMove(e: PointerEvent): void {
   const [x, y] = toMapCoords(e);
   if (editMode) drawCursor(x, y);
   if (routeStart >= 0) {
@@ -957,7 +1051,7 @@ canvas.addEventListener("pointermove", (e) => {
       return [dt, dd];
     }),
   );
-});
+}
 
 function endPointer(e: PointerEvent): void {
   if (draggingSpan) {
@@ -1065,11 +1159,145 @@ function endPointer(e: PointerEvent): void {
   }
   commit(); // 지형을 칠한 뒤라면 여기서 도시·국가·도로까지 다시 배치한다
 }
-canvas.addEventListener("pointerup", endPointer);
-canvas.addEventListener("pointercancel", endPointer);
+/**
+ * 하던 편집(칠하기·끌기)을 없던 일로 한다. 한 손가락으로 편집하다가 두 번째 손가락이 닿아
+ * 확대·이동으로 넘어갈 때 쓴다.
+ */
+function cancelPointerEdit(): void {
+  let changed = false;
+  if (painting) {
+    painting = false;
+    lastPoint = undefined;
+    if (editTarget === "terrain") {
+      const before = editHistory.discardLast();
+      if (before) { elevation = before.elevation; changed = true; }
+    } else if (borderBefore) {
+      civ = borderBefore.civ;
+      borderBefore = undefined;
+      changed = true;
+    }
+  }
+  if (draggingCity >= 0) {
+    draggingCity = -1;
+    if (borderBefore) civ = borderBefore.civ; // 끌기를 시작하며 자동 배치를 고정했다면 그것도 취소
+    borderBefore = undefined;
+  }
+  routeStart = -1;
+  routePreview = null;
+  routeQueued = false;
+  draggingPoint = null;
+  draggingSpan = null;
+  clearOverlay();
+  if (changed) commit();
+}
+
+/** 포인터를 캔버스에 붙잡는다. 이미 떼어진 포인터면 조용히 넘어간다. */
+function capturePointer(id: number): void {
+  try { canvas.setPointerCapture(id); } catch { /* 붙잡지 못해도 캔버스 안에서는 그대로 동작한다 */ }
+}
+
+// 누르고 있는 포인터 (캔버스 픽셀 좌표). 두 개가 되면 두 손가락 확대·이동.
+const pointers = new Map<number, [number, number]>();
+let pan: { id: number; last: [number, number] } | null = null;
+let pinch: { mx: number; my: number; dist: number; scale: number } | null = null;
+/** 두 손가락 제스처 뒤 남은 손가락으로는 편집하지 않는다 (모두 뗄 때까지). */
+let gestureLock = false;
+let spaceHeld = false;
+let hovering = false;
+
+function pinchPoints(): { mid: [number, number]; dist: number } {
+  const [a, b] = [...pointers.values()];
+  return { mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], dist: Math.max(1, Math.hypot(a[0] - b[0], a[1] - b[1])) };
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  pointers.set(e.pointerId, canvasPx(e));
+  if (pointers.size === 2) {
+    e.preventDefault();
+    cancelPointerEdit();
+    pan = null;
+    mapWrap.classList.remove("panning");
+    const { mid, dist } = pinchPoints();
+    const [mx, my] = toMap(view, ...mid);
+    pinch = { mx, my, dist, scale: view.scale };
+    gestureLock = true;
+    capturePointer(e.pointerId);
+    return;
+  }
+  if (pointers.size > 2 || gestureLock) return;
+  // 이동: 가운데·오른쪽 버튼, 편집 모드가 아닐 때의 왼쪽 버튼, 편집 중 스페이스바 + 왼쪽 버튼
+  const wantsPan = e.button === 1 || e.button === 2 || (e.button === 0 && (!editMode || spaceHeld));
+  if (wantsPan) {
+    e.preventDefault();
+    pan = { id: e.pointerId, last: canvasPx(e) };
+    mapWrap.classList.add("panning");
+    capturePointer(e.pointerId);
+    return;
+  }
+  onEditPointerDown(e);
+});
+
+canvas.addEventListener("pointermove", (e) => {
+  const px = canvasPx(e);
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, px);
+  if (pinch) {
+    if (pointers.size >= 2) {
+      const { mid, dist } = pinchPoints();
+      setView(anchoredView(pinch.mx, pinch.my, mid[0], mid[1], pinch.scale * (dist / pinch.dist), canvas.width, canvas.height));
+    }
+    return;
+  }
+  if (pan) {
+    if (e.pointerId === pan.id) {
+      const s = view.scale;
+      setView({ scale: s, x: view.x - (px[0] - pan.last[0]) / s, y: view.y - (px[1] - pan.last[1]) / s });
+      pan.last = px;
+    }
+    return;
+  }
+  if (gestureLock) return;
+  if (e.pointerType === "mouse") hoverPx = px;
+  onEditPointerMove(e);
+});
+
+function onPointerEnd(e: PointerEvent): void {
+  pointers.delete(e.pointerId);
+  if (pinch || gestureLock) {
+    if (pointers.size < 2) pinch = null;
+    if (pointers.size === 0) gestureLock = false;
+    return;
+  }
+  if (pan) {
+    if (e.pointerId === pan.id) {
+      pan = null;
+      mapWrap.classList.remove("panning");
+    }
+    return;
+  }
+  endPointer(e);
+}
+canvas.addEventListener("pointerup", onPointerEnd);
+canvas.addEventListener("pointercancel", onPointerEnd);
+canvas.addEventListener("pointerenter", () => { hovering = true; });
 canvas.addEventListener("pointerleave", () => {
+  hovering = false;
+  hoverPx = undefined;
   if (!painting && draggingCity < 0 && routeStart < 0 && !draggingPoint && !draggingSpan) clearOverlay();
 });
+canvas.addEventListener("contextmenu", (e) => e.preventDefault()); // 오른쪽 버튼 끌기로 이동
+canvas.addEventListener("wheel", (e) => {
+  if (!world) return;
+  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
+  const factor = Math.exp(-e.deltaY * unit * 0.0015);
+  // 더 줄이거나 키울 수 없으면 페이지 스크롤을 막지 않는다.
+  if ((factor < 1 && view.scale <= MIN_SCALE + 1e-6) || (factor > 1 && view.scale >= MAX_SCALE - 1e-6)) return;
+  e.preventDefault();
+  hoverPx = canvasPx(e);
+  setView(zoomAt(view, factor, hoverPx[0], hoverPx[1], canvas.width, canvas.height));
+}, { passive: false });
+$("zoomIn").addEventListener("click", () => zoomBy(1.5));
+$("zoomOut").addEventListener("click", () => zoomBy(1 / 1.5));
+$("zoomReset").addEventListener("click", () => setView(identityView()));
 
 function restore(s: Snapshot): void {
   elevation = s.elevation;
@@ -1233,6 +1461,17 @@ document.addEventListener("keydown", (e) => {
   const target = e.target as HTMLElement;
   if (target.tagName === "INPUT" && (target as HTMLInputElement).type === "text") return;
   const mod = e.ctrlKey || e.metaKey;
+  if (e.key === " " && editMode && hovering) {
+    e.preventDefault(); // 페이지 스크롤·포커스된 버튼 누름을 막는다
+    spaceHeld = true;
+    mapWrap.classList.add("pan-ready");
+    return;
+  }
+  if (!mod && !e.altKey && target.tagName !== "SELECT") {
+    if (e.key === "+" || e.key === "=") { e.preventDefault(); zoomBy(1.5); return; }
+    if (e.key === "-" || e.key === "_") { e.preventDefault(); zoomBy(1 / 1.5); return; }
+    if (e.key === "0") { e.preventDefault(); setView(identityView()); return; }
+  }
   if (mod && e.key.toLowerCase() === "z") {
     e.preventDefault();
     if (e.shiftKey) redo(); else undo();
@@ -1244,9 +1483,21 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+document.addEventListener("keyup", (e) => {
+  if (e.key !== " " || !spaceHeld) return;
+  e.preventDefault();
+  spaceHeld = false;
+  mapWrap.classList.remove("pan-ready");
+});
+window.addEventListener("blur", () => {
+  spaceHeld = false;
+  mapWrap.classList.remove("pan-ready");
+});
+
 $("exportPng").addEventListener("click", () => {
   if (!world) return;
-  canvas.toBlob((blob) => blob && download(`${safeFileName(options.seed)}.png`, blob), "image/png");
+  // 확대해서 보고 있어도 지도 전체를 원래 크기로 저장한다.
+  fullMapCanvas().toBlob((blob) => blob && download(`${safeFileName(options.seed)}.png`, blob), "image/png");
 });
 $("exportJson").addEventListener("click", () => {
   if (!world) return;
@@ -1278,6 +1529,7 @@ setTool(brush.tool);
 setEditTarget("terrain");
 syncBrush();
 setEditMode(false);
+syncZoomUi();
 // 지도 라벨이 대체 글꼴로 그려지지 않도록 웹 글꼴을 먼저 기다린다 (실패해도 진행).
 Promise.race([
   document.fonts.load('600 16px "Noto Serif KR"'),

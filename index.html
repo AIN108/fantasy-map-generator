@@ -210,6 +210,12 @@
         <div class="map-wrap">
           <canvas id="map" width="1200" height="800" aria-label="생성된 판타지 지도"></canvas>
           <canvas id="overlay" width="1200" height="800" aria-hidden="true"></canvas>
+          <div class="zoom-controls" role="group" aria-label="확대·축소">
+            <button type="button" id="zoomIn" title="확대 (+ 또는 휠)" aria-label="확대">+</button>
+            <button type="button" id="zoomOut" title="축소 (-)" aria-label="축소">−</button>
+            <button type="button" id="zoomReset" title="전체 보기 (0)" aria-label="전체 보기">⤢</button>
+            <span id="zoomLevel" aria-live="polite">100%</span>
+          </div>
         </div>
         <section class="legend" id="legend" aria-label="국가 목록"></section>
       </main>

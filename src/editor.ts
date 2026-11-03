@@ -103,6 +103,11 @@ export class EditHistory<T = Float64Array> {
     return next;
   }
 
+  /** 마지막 기록을 되돌리기 목록에 남기지 않고 꺼낸다 (시작했다가 취소한 편집용). */
+  discardLast(): T | undefined {
+    return this.undoStack.pop();
+  }
+
   clear(): void {
     this.undoStack = [];
     this.redoStack = [];
