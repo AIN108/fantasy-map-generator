@@ -743,7 +743,7 @@ export function infraFromJSON(data: unknown, cellCount: number): Infra | undefin
   for (const raw of facRaw) {
     const f = raw as Record<string, unknown> | null;
     const n = name(f?.name);
-    if (!f || !cell(f.cell) || n === false || typeof f.kind !== "string" || !(f.kind in FACILITY_INFO)) return undefined;
+    if (!f || !cell(f.cell) || n === false || typeof f.kind !== "string" || !Object.hasOwn(FACILITY_INFO, f.kind)) return undefined;
     facilities.push({ cell: f.cell, kind: f.kind as FacilityKind, name: n });
   }
   const spans = (v: unknown): Span[] | undefined => {

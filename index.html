@@ -77,6 +77,7 @@
             <button type="button" role="tab" data-target="city" aria-selected="false">도시</button>
             <button type="button" role="tab" data-target="border" aria-selected="false">국경</button>
             <button type="button" role="tab" data-target="infra" aria-selected="false">시설</button>
+            <button type="button" role="tab" data-target="resource" aria-selected="false">자원</button>
           </div>
 
           <div class="tab-panel" data-panel="terrain">
@@ -156,6 +157,22 @@
             <button type="button" id="resetRoads" class="wide">도로 자동 배치로</button>
           </div>
 
+          <div class="tab-panel" data-panel="resource" hidden>
+            <div class="tools" role="radiogroup" aria-label="자원 도구">
+              <label><input type="radio" name="resourceTool" value="add" checked /> 놓기</label>
+              <label><input type="radio" name="resourceTool" value="erase" /> 지우기</label>
+            </div>
+            <label class="field" id="resourceKindField">
+              <span>자원 종류</span>
+              <select id="resourceKind"></select>
+            </label>
+            <label class="field" id="resourceAmountField">
+              <span>매장량 (전략 자원, 1~20)</span>
+              <input id="resourceAmount" type="number" min="1" max="20" step="1" value="4" inputmode="numeric" />
+            </label>
+            <button type="button" id="resetResources" class="wide">자원 자동 배치로</button>
+          </div>
+
           <p class="hint" id="toolHint"></p>
           <div id="brushFields">
             <label class="field">
@@ -187,6 +204,7 @@
           <label><input type="checkbox" data-layer="rails" /> 철도</label>
           <label><input type="checkbox" data-layer="seaRoutes" /> 항로</label>
           <label><input type="checkbox" data-layer="facilities" /> 항구·시설</label>
+          <label><input type="checkbox" data-layer="resources" /> 자원</label>
           <label><input type="checkbox" data-layer="cities" /> 도시</label>
           <label><input type="checkbox" data-layer="labels" /> 지명</label>
         </fieldset>
@@ -218,6 +236,7 @@
           </div>
         </div>
         <section class="legend" id="legend" aria-label="국가 목록"></section>
+        <section class="resource-legend" id="resourceLegend" aria-label="자원 범례"></section>
       </main>
     </div>
     <script type="module" src="./src/main.ts"></script>

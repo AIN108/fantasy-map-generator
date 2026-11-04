@@ -70,7 +70,7 @@ h2 { font-size: 13px; margin: 16px 0 6px; color: var(--muted); font-weight: 500;
 .row { display: flex; gap: 6px; }
 .row > input { flex: 1; min-width: 0; }
 
-input[type="text"], select {
+input[type="text"], input[type="number"], select {
   width: 100%;
   padding: 7px 9px;
   border: 1px solid var(--line);
@@ -106,7 +106,8 @@ button.primary { width: 100%; background: var(--accent); color: var(--accent-tex
 .status.error { color: #c0392b; }
 
 .stage { min-width: 0; }
-canvas {
+/* 지도 캔버스 (범례 아이콘 같은 작은 캔버스에는 적용하지 않는다) */
+#map, #overlay {
   display: block;
   width: 100%;
   height: auto;
@@ -188,6 +189,12 @@ button:disabled:hover { border-color: var(--line); }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; font-size: 13px; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+.resource-legend { display: grid; gap: 4px; margin-top: 10px; font-size: 12.5px; }
+.resource-group { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.resource-group strong { font-weight: 500; color: var(--muted); min-width: 4.5em; }
+.resource-group span { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
+.resource-group canvas { display: block; flex: none; }
 
 @media (max-width: 860px) {
   .app { grid-template-columns: 1fr; padding: 16px; }

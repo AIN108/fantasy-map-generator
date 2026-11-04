@@ -1,6 +1,6 @@
 import { MAX_SPAN_LENGTH } from "../infra.ts";
 
-export type EditTarget = "terrain" | "city" | "border" | "infra";
+export type EditTarget = "terrain" | "city" | "border" | "infra" | "resource";
 export type InfraTool = "road" | "rail" | "sea" | "bridge" | "tunnel" | "port" | "facility" | "move" | "toggleMode" | "erase";
 export type CityTool = "move" | "add" | "delete" | "rename" | "capital" | "newState";
 
@@ -24,6 +24,13 @@ export const CITY_TOOL_HINTS: Record<CityTool, string> = {
   rename: "도시를 누르고 새 이름을 입력합니다.",
   capital: "도시를 누르면 그 도시가 속한 나라의 수도가 됩니다.",
   newState: "도시를 누르면 그 도시를 수도로 하는 새 나라가 생깁니다. 원래 나라의 영토는 두 수도 중 가까운 쪽으로 나뉩니다.",
+};
+
+export type ResourceTool = "add" | "erase";
+
+export const RESOURCE_TOOL_HINTS: Record<ResourceTool, string> = {
+  add: "고른 자원을 누른 칸에 놓습니다. 이미 자원이 있으면 바꿉니다. 어장·진주는 바다·호수에, 석유는 육지·바다 어디든, 나머지는 육지에만 둘 수 있습니다.",
+  erase: "누른 곳에서 가장 가까운 자원을 지웁니다. 자동으로 놓인 자원도 지울 수 있고, '자원 자동 배치로'로 되살립니다.",
 };
 
 export const BORDER_HINT = "고른 국가의 영토로 칠합니다. 다른 나라의 수도 자리는 칠해지지 않습니다.";

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { snapshotCiv } from "../src/civedit.ts";
 import { emptyInfra } from "../src/infra.ts";
+import { emptyResourceEdits } from "../src/resources.ts";
 import { computePreview, PreviewWorkerState, type PreviewInput, type WorkerRequest, type WorkerResponse } from "../src/preview.ts";
 import { PreviewClient, type WorkerLike } from "../src/ui/preview-client.ts";
 import {
@@ -38,7 +39,8 @@ describe("자연 계산 재사용", () => {
 });
 
 const input = (e: Float64Array, natureOnly = true): PreviewInput => ({
-  options: OPTS, elevation: Float64Array.from(e), natureOnly, infra: emptyInfra(), natureKey: natureKey(OPTS, e),
+  options: OPTS, elevation: Float64Array.from(e), natureOnly, infra: emptyInfra(), resources: emptyResourceEdits(),
+  natureKey: natureKey(OPTS, e),
 });
 
 describe("Worker 계산", () => {

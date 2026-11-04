@@ -6,6 +6,10 @@ import {
   type City, type State,
 } from "./civ.ts";
 import { computeHydrology, extractRivers, type Hydrology } from "./hydrology.ts";
+import {
+  applyResourceEdits, isEmptyResourceEdits, placeResources, RESOURCE_INFO, resourceEditsFromJSON, resourceEditsToJSON,
+  type Resource, type ResourceEdits,
+} from "./resources.ts";
 import { buildMesh, type Mesh } from "./mesh.ts";
 import { NameGenerator, type NameStyle } from "./names.ts";
 import { cellHash, subRng } from "./rng.ts";
@@ -77,7 +81,14 @@ export interface WorldMap {
   tunnels: Span[];
   hiddenMarks: number[];
   peaks: Peak[];
+  /** 자동 배치한 천연자원 (지우기·되돌리기 판단용) */
+  autoResources: Resource[];
+  /** 화면에 보이는 천연자원: 자동 배치 + 직접 편집 (applyResources로 반영) */
+  resources: Resource[];
 }
+
+/** 문명까지 계산했지만 자원을 아직 붙이지 않은 지도 */
+type WorldCore = Omit<WorldMap, "autoResources" | "resources">;
 
 export function validateOptions(o: WorldOptions): void {
   const fail = (msg: string): never => { throw new RangeError(msg); };
@@ -125,6 +136,8 @@ export interface Nature {
   hydro: Hydrology;
   biome: Biome[];
   rivers: River[];
+  /** 자동 배치한 천연자원 (직접 편집은 반영하지 않은 값) */
+  resources: Resource[];
 }
 
 export function computeNature(options: WorldOptions, mesh: Mesh, elevation: Float64Array): Nature {
@@ -149,7 +162,8 @@ export function computeNature(options: WorldOptions, mesh: Mesh, elevation: Floa
     cells,
     flux: hydro.flux[cells[cells.length - 2] ?? cells[0]],
   }));
-  return { temperature, moisture, hydro, biome, rivers };
+  const resources = placeResources({ mesh, elevation, temperature, biome, hydro }, seed);
+  return { temperature, moisture, hydro, biome, rivers, resources };
 }
 
 /**
@@ -168,7 +182,7 @@ export function natureKey(options: WorldOptions, elevation: Float64Array): strin
 }
 
 export const natureOf = (w: WorldMap): Nature => ({
-  temperature: w.temperature, moisture: w.moisture, hydro: w.hydro, biome: w.biome, rivers: w.rivers,
+  temperature: w.temperature, moisture: w.moisture, hydro: w.hydro, biome: w.biome, rivers: w.rivers, resources: w.autoResources,
 });
 
 export function deriveWorld(
@@ -184,13 +198,15 @@ export function deriveWorld(
   const n = nature ?? computeNature(options, mesh, elevation);
   const { temperature, moisture, hydro, biome } = n;
   const rivers: River[] = nature ? nature.rivers.map((r) => ({ cells: r.cells, flux: r.flux })) : n.rivers;
+  const autoResources = n.resources;
+  const finish = (w: WorldCore): WorldMap => ({ ...w, autoResources, resources: autoResources.map((r) => ({ ...r })) });
 
   if (natureOnly) {
-    return {
+    return finish({
       options, mesh, elevation, temperature, moisture, biome, hydro, rivers,
       owner: new Int32Array(mesh.count).fill(-1), states: [], cities: [], roads: [], peaks: [],
       rails: [], seaRoutes: [], ports: [], facilities: [], bridges: [], tunnels: [], hiddenMarks: [],
-    };
+    });
   }
 
   // ── 문명 ──
@@ -210,9 +226,9 @@ export function deriveWorld(
   const peakCells = findPeaks(mesh, elevation, 6, capitalSpacing * 0.6);
 
   if (civ) {
-    return deriveEditedCiv(options, mesh, elevation, biome, hydro, civ, {
+    return finish(deriveEditedCiv(options, mesh, elevation, biome, hydro, civ, {
       temperature, moisture, rivers, namedRivers, peakCells, capitalSpacing, prior, links,
-    });
+    }));
   }
 
   // 이전 지도의 이름을 물려받을 대상을 먼저 정하고, 물려받은 이름을 예약한 뒤 나머지에만 새 이름을 붙인다.
@@ -265,10 +281,10 @@ export function deriveWorld(
 
   const peaks: Peak[] = peakCells.map((cell) => ({ cell, name: inherit?.peaks.get(cell) ?? names.next("mountain") }));
 
-  return {
+  return finish({
     options, mesh, elevation, temperature, moisture, biome, hydro, rivers, owner, states, cities, roads, peaks,
     rails: [], seaRoutes: [], ports: [], facilities: [], bridges: [], tunnels: [], hiddenMarks: [],
-  };
+  });
 }
 
 /**
@@ -281,7 +297,7 @@ function deriveEditedCiv(
     temperature: Float64Array; moisture: Float64Array; rivers: River[]; namedRivers: River[];
     peakCells: number[]; capitalSpacing: number; prior?: NameAnchors; links?: LinkGraph;
   },
-): WorldMap {
+): WorldCore {
   const style = options.nameStyle;
   const habitable = (i: number): boolean => elevation[i] > 0 && !hydro.isLake[i];
   const owner = new Int32Array(mesh.count);
@@ -481,7 +497,7 @@ export function sanitizeAnchors(data: unknown): NameAnchors | undefined {
 }
 
 /** 다른 프로젝트(TRPG·경제 시뮬레이터 등)에서 불러 쓰기 위한 JSON 내보내기 */
-export function toJSON(world: WorldMap, civ?: CivState, infra?: Infra): object {
+export function toJSON(world: WorldMap, civ?: CivState, infra?: Infra, resourceEdits?: ResourceEdits): object {
   const { mesh } = world;
   const round = (v: number): number => Math.round(v * 1000) / 1000;
   return {
@@ -507,6 +523,14 @@ export function toJSON(world: WorldMap, civ?: CivState, infra?: Infra): object {
     ...(civ ? { civ: civToJSON(civ) } : {}),
     // 그린 철도·항구·시설물(과 고정한 도로)
     ...(infra && !isEmptyInfra(infra) ? { infra: infraToJSON(infra) } : {}),
+    // 천연자원 (자동 배치 + 직접 편집을 반영한 최종 목록). 전략 자원은 매장량(amount)이 있다.
+    resources: world.resources.map((r) => ({
+      cell: r.cell, kind: r.kind, name: RESOURCE_INFO[r.kind].ko, category: RESOURCE_INFO[r.kind].category,
+      ...(r.amount !== undefined ? { amount: r.amount } : {}),
+      x: round(mesh.x[r.cell]), y: round(mesh.y[r.cell]),
+    })),
+    // 직접 놓거나 지운 자원 (다시 불러올 때 쓴다)
+    ...(resourceEdits && !isEmptyResourceEdits(resourceEdits) ? { resourceEdits: resourceEditsToJSON(resourceEdits) } : {}),
     rails: world.rails,
     seaRoutes: world.seaRoutes,
     bridges: world.bridges,
@@ -520,6 +544,11 @@ export function toJSON(world: WorldMap, civ?: CivState, infra?: Infra): object {
  * 계산한 지도에 사용자가 그린 기반 시설을 반영한다 (물에 잠긴 부분은 빼고 그린다).
  * 도로를 고정했다면 자동 도로 대신 고정한 도로를 쓴다.
  */
+/** 자동 배치한 자원에 직접 편집(놓기·지우기)을 반영한다. */
+export function applyResources(world: WorldMap, edits: ResourceEdits): WorldMap {
+  return { ...world, resources: applyResourceEdits(world.autoResources, edits, world) };
+}
+
 export function applyInfra(world: WorldMap, infra: Infra): WorldMap {
   const v = visibleInfra(world, infra, world.roads);
   return { ...world, ...v };
@@ -533,6 +562,7 @@ export function parseMapJSON(
   data: unknown,
 ): {
   options: WorldOptions; elevation: Float64Array; mesh: Mesh; anchors?: NameAnchors; civ?: CivState; infra?: Infra;
+  resources?: ResourceEdits;
 } {
   const fail = (msg: string): never => { throw new Error(`지도 파일을 읽을 수 없습니다: ${msg}`); };
   if (typeof data !== "object" || data === null) fail("JSON 객체가 아닙니다.");
@@ -576,7 +606,12 @@ export function parseMapJSON(
     infra = infraFromJSON(obj.infra, mesh.count);
     if (!infra) fail("도로·철도·시설(infra) 정보가 올바르지 않습니다.");
   }
-  return { options, elevation, mesh, anchors, civ, infra };
+  let resources: ResourceEdits | undefined;
+  if (obj.resourceEdits !== undefined) {
+    resources = resourceEditsFromJSON(obj.resourceEdits, mesh.count);
+    if (!resources) fail("직접 편집한 자원(resourceEdits) 정보가 올바르지 않습니다.");
+  }
+  return { options, elevation, mesh, anchors, civ, infra, resources };
 }
 
 /**

@@ -1,6 +1,7 @@
 import { BIOME_INFO } from "./climate.ts";
 import { FACILITY_INFO, pathMarks, type FacilityKind, type SpanMode } from "./infra.ts";
 import { forEachNeighbor, type Mesh } from "./mesh.ts";
+import { RESOURCE_CATEGORY_KO, RESOURCE_INFO, type ResourceCategory, type ResourceKind } from "./resources.ts";
 import type { WorldMap } from "./world.ts";
 
 export interface Layers {
@@ -12,13 +13,14 @@ export interface Layers {
   rails: boolean;
   seaRoutes: boolean;
   facilities: boolean;
+  resources: boolean;
   cities: boolean;
   labels: boolean;
 }
 
 export const DEFAULT_LAYERS: Layers = {
   relief: true, rivers: true, borders: true, stateTint: false, roads: true, rails: true, seaRoutes: true, facilities: true,
-  cities: true, labels: true,
+  resources: true, cities: true, labels: true,
 };
 
 const LABEL_FONT = '"Noto Serif KR", "Noto Serif", Georgia, serif';
@@ -403,6 +405,17 @@ function drawBase(ctx: CanvasRenderingContext2D, world: WorldMap, cache: RenderC
     }
   }
 
+  // 6-2) 천연자원: 도시·시설보다 아래. 같은 셀에 도시·시설이 있으면 아이콘을 오른쪽 아래로 비켜 그린다.
+  if (layers.resources && world.resources.length > 0) {
+    const taken = new Set<number>();
+    if (layers.cities) for (const c of world.cities) taken.add(c.cell);
+    if (layers.facilities) for (const f of [...world.ports, ...world.facilities]) taken.add(f.cell);
+    for (const r of world.resources) {
+      const shift = taken.has(r.cell) ? 7 * m : 0;
+      drawScaledResource(ctx, r.kind, mesh.x[r.cell] + shift, mesh.y[r.cell] + shift, m);
+    }
+  }
+
   // 6-3) 항구·시설물 아이콘
   if (layers.facilities) {
     for (const port of world.ports) {
@@ -434,7 +447,6 @@ function drawBase(ctx: CanvasRenderingContext2D, world: WorldMap, cache: RenderC
   ctx.restore();
 }
 
-/** 지명을 덧그린다. k = 1 / 확대 배율 (글자 크기·간격을 화면 기준으로 고정). */
 /** 시설 아이콘을 m배로 그린다. */
 function drawScaledIcon(ctx: CanvasRenderingContext2D, kind: FacilityKind | "port", x: number, y: number, m: number): void {
   if (m === 1) { drawFacilityIcon(ctx, kind, x, y); return; }
@@ -462,6 +474,7 @@ function drawLabels(ctx: CanvasRenderingContext2D, world: WorldMap, layers: Laye
       placer.reserve({ x: mesh.x[c.cell] - r, y: mesh.y[c.cell] - r, w: 2 * r, h: 2 * r });
     }
   }
+  // 자원 아이콘 자리는 비워 두지 않는다: 수가 많아 지명이 너무 많이 빠진다 (글자는 테두리 덕에 아이콘 위에서도 읽힌다).
   {
     // 국가 이름 (가장 크게, 먼저 배치)
     for (const s of world.states) {
@@ -535,6 +548,11 @@ export function describeCell(world: WorldMap, i: number): Record<string, string>
   if (port) info["항구"] = port.name ?? "이름 없음";
   const fac = world.facilities.find((f) => f.cell === i);
   if (fac) info["시설"] = fac.name ? `${FACILITY_INFO[fac.kind].ko} · ${fac.name}` : FACILITY_INFO[fac.kind].ko;
+  const res = world.resources.find((r) => r.cell === i);
+  if (res) {
+    const { ko, category } = RESOURCE_INFO[res.kind];
+    info["자원"] = `${ko} (${RESOURCE_CATEGORY_KO[category]}${res.amount !== undefined ? ` · 매장량 ${res.amount}` : ""})`;
+  }
   return info;
 }
 
@@ -741,6 +759,121 @@ export function drawFacilityIcon(ctx: CanvasRenderingContext2D, kind: FacilityKi
       ctx.moveTo(-1.5, -3.2); ctx.lineTo(1.5, -3.2);
       ctx.moveTo(-2.5, -4.5); ctx.lineTo(-4.3, -5.3); ctx.moveTo(2.5, -4.5); ctx.lineTo(4.3, -5.3);
       ctx.stroke();
+      break;
+  }
+  ctx.restore();
+}
+
+function drawScaledResource(ctx: CanvasRenderingContext2D, kind: ResourceKind, x: number, y: number, m: number): void {
+  if (m === 1) { drawResourceIcon(ctx, kind, x, y); return; }
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(m, m);
+  drawResourceIcon(ctx, kind, 0, 0);
+  ctx.restore();
+}
+
+/** 분류별 테두리 색: 전략(적갈색)·사치(보라)·기본(초록) */
+export const RESOURCE_RING: Record<ResourceCategory, string> = {
+  strategic: "#8a3b1f", luxury: "#6b3fa0", bonus: "#3f7a2e",
+};
+
+/**
+ * 천연자원 아이콘 (지름 약 10px, 시설 아이콘보다 작다). 분류 색 테두리의 밝은 원 안에 종류별 기호를 그린다.
+ * 기호는 모두 직접 그린 도형이라 글꼴과 관계없이 같은 모양이다.
+ */
+export function drawResourceIcon(ctx: CanvasRenderingContext2D, kind: ResourceKind, x: number, y: number): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  ctx.arc(0, 0, 5, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255,252,244,0.94)";
+  ctx.fill();
+  ctx.strokeStyle = RESOURCE_RING[RESOURCE_INFO[kind].category];
+  ctx.lineWidth = 1.3;
+  ctx.stroke();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 1;
+  const fill = (color: string): void => { ctx.fillStyle = color; ctx.fill(); };
+  const stroke = (color: string, w = 1): void => { ctx.strokeStyle = color; ctx.lineWidth = w; ctx.stroke(); };
+  ctx.beginPath();
+  switch (kind) {
+    case "iron": // 쇳덩이 (사다리꼴 주괴)
+      ctx.moveTo(-3, 1.8); ctx.lineTo(-1.8, -1.6); ctx.lineTo(1.8, -1.6); ctx.lineTo(3, 1.8); ctx.closePath();
+      fill("#5e646c"); stroke("#2b2b2b", 0.6);
+      break;
+    case "coal": // 울퉁불퉁한 석탄 덩이
+      ctx.moveTo(-3, 1); ctx.lineTo(-2, -1.8); ctx.lineTo(0.2, -2.6); ctx.lineTo(2.6, -1.2); ctx.lineTo(3, 1.4); ctx.lineTo(0.6, 2.6); ctx.lineTo(-2.2, 2.2);
+      ctx.closePath();
+      fill("#1f1f1f");
+      break;
+    case "oil": // 기름방울
+      ctx.moveTo(0, -3.4); ctx.bezierCurveTo(1.2, -1.4, 2.6, 0, 2.6, 1.2); ctx.arc(0, 1.2, 2.6, 0, Math.PI); ctx.bezierCurveTo(-2.6, 0, -1.2, -1.4, 0, -3.4);
+      fill("#141414");
+      break;
+    case "horses": // 말굽
+      ctx.arc(0, -0.4, 2.4, Math.PI * 0.95, Math.PI * 2.05);
+      ctx.moveTo(-2.4, -0.2); ctx.lineTo(-2.2, 2.6); ctx.moveTo(2.4, -0.2); ctx.lineTo(2.2, 2.6);
+      stroke("#7a4a22", 1.4);
+      break;
+    case "gold": // 금괴
+      ctx.moveTo(-3, 1.6); ctx.lineTo(-2, -1.2); ctx.lineTo(2, -1.2); ctx.lineTo(3, 1.6); ctx.closePath();
+      fill("#e0b020"); stroke("#8a6a00", 0.6);
+      break;
+    case "silver": // 은화
+      ctx.arc(0, 0, 2.7, 0, Math.PI * 2);
+      fill("#c3c8cf"); stroke("#5f6670", 0.7);
+      ctx.beginPath(); ctx.arc(0, 0, 1.3, 0, Math.PI * 2); stroke("#5f6670", 0.6);
+      break;
+    case "gems": // 보석 (위에서 본 다이아몬드)
+      ctx.moveTo(-3, -0.8); ctx.lineTo(-1.6, -2.4); ctx.lineTo(1.6, -2.4); ctx.lineTo(3, -0.8); ctx.lineTo(0, 3); ctx.closePath();
+      fill("#2aa7c9"); stroke("#11576b", 0.6);
+      break;
+    case "spices": // 고추 세 알
+      for (const [dx, dy] of [[-1.6, 1], [1.6, 1], [0, -1.6]] as const) { ctx.moveTo(dx + 1.2, dy); ctx.arc(dx, dy, 1.2, 0, Math.PI * 2); }
+      fill("#c0392b");
+      break;
+    case "silk": // 실타래
+      ctx.rect(-1.4, -2.6, 2.8, 5.2);
+      fill("#a569bd");
+      ctx.beginPath(); ctx.moveTo(-2.8, -2.6); ctx.lineTo(2.8, -2.6); ctx.moveTo(-2.8, 2.6); ctx.lineTo(2.8, 2.6); stroke("#5b2c6f", 1.1);
+      break;
+    case "pearls": // 진주 (흰 구슬과 하이라이트)
+      ctx.arc(0, 0.3, 2.6, 0, Math.PI * 2);
+      fill("#f4f1ff"); stroke("#7d7a8c", 0.7);
+      ctx.beginPath(); ctx.arc(-0.9, -0.6, 0.7, 0, Math.PI * 2); fill("#ffffff");
+      break;
+    case "furs": // 발자국 (큰 볼록살 + 발가락 셋)
+      ctx.ellipse(0, 1.2, 1.8, 1.4, 0, 0, Math.PI * 2);
+      for (const dx of [-1.8, 0, 1.8]) { ctx.moveTo(dx + 0.8, -1.6); ctx.arc(dx, -1.6, 0.8, 0, Math.PI * 2); }
+      fill("#7b4a26");
+      break;
+    case "wood": // 나무 (삼각 수관 + 줄기)
+      ctx.moveTo(0, -3.4); ctx.lineTo(2.8, 1.2); ctx.lineTo(-2.8, 1.2); ctx.closePath();
+      fill("#2f7d32");
+      ctx.beginPath(); ctx.rect(-0.6, 1.2, 1.2, 2); fill("#6d4c2f");
+      break;
+    case "grain": // 밀 이삭
+      ctx.moveTo(0, 3.4); ctx.lineTo(0, -3);
+      stroke("#9a7b12", 0.8);
+      ctx.beginPath();
+      for (const dy of [-2, -0.4, 1.2]) { ctx.ellipse(-1, dy, 0.9, 0.5, -0.6, 0, Math.PI * 2); ctx.ellipse(1, dy, 0.9, 0.5, 0.6, 0, Math.PI * 2); }
+      fill("#d4a72c");
+      break;
+    case "cattle": // 소머리 (뿔 + 얼굴)
+      ctx.moveTo(-3, -2.4); ctx.quadraticCurveTo(-2.6, -0.6, -1.2, -0.8); ctx.moveTo(3, -2.4); ctx.quadraticCurveTo(2.6, -0.6, 1.2, -0.8);
+      stroke("#5a5148", 0.9);
+      ctx.beginPath(); ctx.ellipse(0, 0.8, 1.8, 2.2, 0, 0, Math.PI * 2); fill("#8b5a3c");
+      break;
+    case "fish": // 물고기
+      ctx.ellipse(-0.5, 0, 2.3, 1.4, 0, 0, Math.PI * 2);
+      ctx.moveTo(1.5, 0); ctx.lineTo(3.2, -1.5); ctx.lineTo(3.2, 1.5); ctx.closePath();
+      fill("#2c6aa0");
+      break;
+    case "stone": // 쌓은 돌 블록
+      ctx.rect(-3, 0, 2.8, 2.2); ctx.rect(0.2, 0, 2.8, 2.2); ctx.rect(-1.4, -2.4, 2.8, 2.2);
+      fill("#8d8a85"); stroke("#4a4743", 0.6);
       break;
   }
   ctx.restore();

@@ -23,6 +23,8 @@ export interface ExportedMap {
   facilities: { cell: number; kind: string; name?: string }[];
   bridges: Span[];
   tunnels: Span[];
+  resources: { cell: number; kind: string; name: string; category: string; amount?: number; x: number; y: number }[];
+  resourceEdits?: { added: { cell: number; kind: string; amount?: number }[]; removed: number[] };
   infra?: {
     roads?: number[][]; rails?: number[][]; facilities?: { cell: number }[]; hiddenMarks?: unknown[];
   };

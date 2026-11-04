@@ -2,6 +2,7 @@ import { civFromJSON, civToJSON, type CivState } from "../civedit.ts";
 import { decodeElevation, encodeElevation } from "../editor.ts";
 import { infraFromJSON, infraToJSON, isEmptyInfra, type Infra } from "../infra.ts";
 import type { NameStyle } from "../names.ts";
+import { isEmptyResourceEdits, resourceEditsFromJSON, resourceEditsToJSON, type ResourceEdits } from "../resources.ts";
 import { sanitizeAnchors, type NameAnchors } from "../world.ts";
 
 /** 편집 내용 브라우저 저장 (이 브라우저에만 남는 편의 기능) */
@@ -15,6 +16,7 @@ export interface SavedEdits {
   names: Partial<Record<NameStyle, NameAnchors>>;
   civ?: CivState;
   infra?: Infra;
+  resources?: ResourceEdits;
 }
 
 /**
@@ -32,6 +34,7 @@ export function saveEdits(
         names: edits.names,
         civ: edits.civ ? civToJSON(edits.civ) : undefined,
         infra: !edits.infra || isEmptyInfra(edits.infra) ? undefined : infraToJSON(edits.infra),
+        resources: !edits.resources || isEmptyResourceEdits(edits.resources) ? undefined : resourceEditsToJSON(edits.resources),
       }));
     } else {
       store.removeItem(STORAGE_KEY);
@@ -50,7 +53,7 @@ export function loadSavedEdits(store: KeyValueStore, terrainKey: string, cellCou
     const raw = store.getItem(STORAGE_KEY);
     if (!raw) return undefined;
     const saved = JSON.parse(raw) as {
-      terrainKey?: unknown; data?: unknown; names?: Record<string, unknown>; civ?: unknown; infra?: unknown;
+      terrainKey?: unknown; data?: unknown; names?: Record<string, unknown>; civ?: unknown; infra?: unknown; resources?: unknown;
     };
     if (saved.terrainKey !== terrainKey || typeof saved.data !== "string") return undefined;
     const count = cellCount();
@@ -65,6 +68,7 @@ export function loadSavedEdits(store: KeyValueStore, terrainKey: string, cellCou
       elevation, names,
       civ: saved.civ === undefined ? undefined : civFromJSON(saved.civ, count),
       infra: saved.infra === undefined ? undefined : infraFromJSON(saved.infra, count),
+      resources: saved.resources === undefined ? undefined : resourceEditsFromJSON(saved.resources, count),
     };
   } catch {
     return undefined;

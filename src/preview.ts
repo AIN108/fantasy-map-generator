@@ -3,8 +3,9 @@ import type { CivState } from "./civedit.ts";
 import type { Infra } from "./infra.ts";
 import type { Mesh } from "./mesh.ts";
 import { buildRenderCache, type RenderCache } from "./render.ts";
+import type { ResourceEdits } from "./resources.ts";
 import {
-  applyInfra, createMesh, deriveWorld, meshKey, natureOf, type NameAnchors, type Nature, type WorldMap, type WorldOptions,
+  applyInfra, applyResources, createMesh, deriveWorld, meshKey, natureOf, type NameAnchors, type Nature, type WorldMap, type WorldOptions,
 } from "./world.ts";
 
 /**
@@ -24,6 +25,8 @@ export interface PreviewInput {
   civ?: CivState;
   links?: LinkGraph;
   infra: Infra;
+  /** 직접 편집한 자원 */
+  resources: ResourceEdits;
   /** natureKey(options, elevation): 같은 고도면 자연 계산을 다시 쓴다 (국경 칠하기는 고도가 그대로다) */
   natureKey: string;
 }
@@ -32,8 +35,8 @@ export interface PreviewOutput { world: WorldWithoutMesh; cache: RenderCache; na
 
 /** main.ts의 derive()와 같은 계산 (이름 기억·자동 도로 갱신 같은 부수 효과는 없다) */
 export function computePreview(mesh: Mesh, input: PreviewInput, nature?: Nature): { world: WorldMap; cache: RenderCache } {
-  const { options, elevation, natureOnly, prior, civ, links, infra } = input;
-  const world = applyInfra(deriveWorld(options, mesh, elevation, natureOnly, prior, civ, links, nature), infra);
+  const { options, elevation, natureOnly, prior, civ, links, infra, resources } = input;
+  const world = applyResources(applyInfra(deriveWorld(options, mesh, elevation, natureOnly, prior, civ, links, nature), infra), resources);
   return { world, cache: buildRenderCache(world) };
 }
 

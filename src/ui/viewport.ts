@@ -1,6 +1,7 @@
 import { renderWorld, type Layers, type RenderCache } from "../render.ts";
 import { anchoredView, clampView, identityView, MAX_SCALE, MIN_SCALE, sameView, toMap, zoomAt, type View } from "../view.ts";
 import type { WorldMap } from "../world.ts";
+import { isTypingTarget } from "./dom.ts";
 
 /**
  * 지도 캔버스 그리기와 확대·이동 입력 (휠·버튼·키보드·끌기·두 손가락).
@@ -390,7 +391,7 @@ export class Viewport {
   /** 확대·이동 키 (스페이스: 끌어서 이동, + - 0: 확대·축소·맞춤). 처리했으면 true. */
   private onKeyDown(e: KeyboardEvent): boolean {
     const target = e.target as HTMLElement;
-    if (target.tagName === "INPUT" && (target as HTMLInputElement).type === "text") return false;
+    if (isTypingTarget(target)) return false;
     if (e.key === " " && this.hooks.editMode() && this.hovering) {
       e.preventDefault(); // 페이지 스크롤·포커스된 버튼 누름을 막는다
       this.spaceHeld = true;
