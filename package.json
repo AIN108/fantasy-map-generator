@@ -9,12 +9,14 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "node --test \"test/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "d3-delaunay": "6.0.4"
   },
   "devDependencies": {
+    "@playwright/test": "1.56.1",
     "@types/d3-delaunay": "6.0.4",
     "@types/node": "22.20.5",
     "typescript": "6.0.3",

@@ -20,7 +20,10 @@ npm ci
 npm run dev        # 개발 서버
 npm test           # 테스트 (node:test)
 npm run build      # dist/ 정적 빌드
+npm run test:e2e   # 브라우저 E2E (Playwright, 빌드 후 실행)
 ```
+
+E2E는 빌드된 `dist/`를 `vite preview`로 띄워 Chromium에서 지도 생성·JSON 왕복·지형/도시/국경 편집과 되돌리기·확대 중 배치 정확도·핀치 취소·화면 폭별 확대 버튼 위치·휴대폰 터치를 검사합니다. 일반 화면과 고해상도(배율 2) 화면에서 각각 돕니다. 처음 한 번은 `npx playwright install chromium`으로 브라우저를 받아야 합니다.
 
 ## 확대·이동
 
@@ -123,7 +126,7 @@ npm run build      # dist/ 정적 빌드
 
 ## 배포
 
-`main`에 푸시하면 GitHub Actions가 타입 검사·테스트·빌드 후 GitHub Pages에 배포합니다. 처음 한 번은 저장소 Settings → Pages → Source를 **GitHub Actions**로 설정해야 합니다.
+`main`에 푸시하면 GitHub Actions가 타입 검사·테스트·빌드·E2E 후 GitHub Pages에 배포합니다. 처음 한 번은 저장소 Settings → Pages → Source를 **GitHub Actions**로 설정해야 합니다. E2E가 실패하면 배포하지 않고, 실패 화면·trace를 `playwright-report` 아티팩트로 올립니다.
 
 ## 라이선스
 
