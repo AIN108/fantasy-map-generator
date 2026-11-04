@@ -13,6 +13,8 @@ export default defineConfig({
   workers: isCI ? 2 : undefined,
   reporter: isCI ? [["list"], ["html", { open: "never" }]] : "list",
   timeout: 60_000,
+  // 기준 이미지는 OS별로 다르게 나오므로 파일 이름에 플랫폼을 붙이지 않고 Linux 기준 하나만 둔다
+  snapshotPathTemplate: "{testDir}/__screenshots__/{testFilePath}/{arg}-{projectName}{ext}",
   use: {
     baseURL: `http://localhost:${PORT}/`,
     trace: "retain-on-failure",
@@ -23,6 +25,8 @@ export default defineConfig({
     // 고해상도 화면: 캔버스 해상도·좌표 변환이 배율 2에서도 맞는지
     { name: "desktop-hidpi", use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 },
       testIgnore: /layout\.spec/ },
+    // Safari 계열 엔진. 시각 회귀 기준 이미지는 Chromium으로만 만든다.
+    { name: "webkit", use: { ...devices["Desktop Safari"], viewport: { width: 1440, height: 900 } }, testIgnore: /visual\.spec/ },
   ],
   webServer: {
     command: `npx vite preview --port ${PORT} --strictPort`,

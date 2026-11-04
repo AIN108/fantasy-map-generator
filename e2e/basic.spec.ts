@@ -72,6 +72,43 @@ test("지형 편집 → 되돌리기·다시 하기 → 새로고침 후 유지"
   expect(errors).toEqual([]);
 });
 
+test("나라 하나를 바다로 가라앉혀도 남은 지명은 그대로이고, 지명 스타일을 왕복해도 같다", async ({ page }) => {
+  test.slow(); // 큰 붓으로 120번 칠하는 동안 매 프레임 지형을 다시 계산한다
+  const errors = collectErrors(page);
+  await openApp(page);
+  const legend = async () => (await page.locator("#legend span").allTextContents()).join(" | ");
+  const before = await legend();
+
+  await page.keyboard.press("e");
+  await page.check('input[name="tool"][value="lower"]');
+  await page.locator("#brushSize").fill("120");
+  await page.locator("#brushStrength").fill("1");
+  await expect(page.locator("#brushSizeOut")).toHaveText("120px");
+  // 시드 '청운' 지도 서쪽 국가 부근
+  const [x, y] = await mapToScreen(page, 1200 * 0.16, 800 * 0.6);
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  for (let k = 0; k < 120; k++) await page.mouse.move(x + Math.cos(k) * 20, y + Math.sin(k) * 20);
+  await page.mouse.up();
+  await expect(page.locator("#undo")).toBeEnabled();
+  const after = await legend();
+  expect(after).not.toBe(before);
+  // 가라앉지 않은 나라의 이름은 바뀌지 않는다
+  const kept = after.split(" | ").filter((s) => before.includes(s.split(" · ")[0]));
+  expect(kept.length).toBeGreaterThan(0);
+
+  await page.keyboard.press("Control+z");
+  await expect.poll(legend).toBe(before);
+  await page.keyboard.press("Control+Shift+z");
+  await expect.poll(legend).toBe(after);
+
+  await page.selectOption("#nameStyle", "western");
+  await expect.poll(legend).not.toBe(after);
+  await page.selectOption("#nameStyle", "korean");
+  await expect.poll(legend).toBe(after);
+  expect(errors).toEqual([]);
+});
+
 test("PNG 저장은 보기 배율과 상관없이 원래 크기(1200×800)", async ({ page }) => {
   await openApp(page);
   await page.click("#zoomIn");

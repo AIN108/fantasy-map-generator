@@ -23,7 +23,11 @@ npm run build      # dist/ 정적 빌드
 npm run test:e2e   # 브라우저 E2E (Playwright, 빌드 후 실행)
 ```
 
-E2E는 빌드된 `dist/`를 `vite preview`로 띄워 Chromium에서 지도 생성·JSON 왕복·지형/도시/국경 편집과 되돌리기·확대 중 배치 정확도·핀치 취소·화면 폭별 확대 버튼 위치·휴대폰 터치를 검사합니다. 일반 화면과 고해상도(배율 2) 화면에서 각각 돕니다. 처음 한 번은 `npx playwright install chromium`으로 브라우저를 받아야 합니다.
+E2E는 빌드된 `dist/`를 `vite preview`로 띄워 실제 브라우저에서 검사합니다.
+
+- 기능: 지도 생성·JSON 왕복, 지형/도시/국경 편집과 되돌리기, 도로·철도·항로·항구·시설물·다리·터널(용도 규칙 포함), 확대 중 배치 정확도·핀치 취소, 화면 폭별 확대 버튼 위치, 휴대폰 터치.
+- 브라우저: Chromium 일반·고해상도(배율 2), WebKit(Safari 엔진). 처음 한 번은 `npx playwright install chromium webkit`으로 브라우저를 받아야 합니다.
+- 시각 회귀(`e2e/visual.spec.ts`): 고정 시드 지도의 캔버스 픽셀을 `e2e/__screenshots__/`의 기준 이미지와 비교합니다. 글꼴 차이를 피하려고 지명 레이어는 끄고 비교하며, Linux Chromium에서만 돕니다. 렌더링을 의도적으로 바꿨다면 `npx playwright test e2e/visual.spec.ts --update-snapshots`로 기준 이미지를 다시 만들어 함께 커밋합니다.
 
 ## 확대·이동
 

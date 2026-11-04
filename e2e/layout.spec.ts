@@ -1,7 +1,7 @@
 import { test, expect, devices } from "@playwright/test";
 import { collectErrors, enterInfraFacilityTool, exportJson, mapToScreen, openApp, pickLandCell } from "./helpers.ts";
 
-// 화면 폭·배율을 테스트마다 직접 정하므로 desktop 프로젝트에서만 돈다 (playwright.config.ts의 testIgnore).
+// 화면 폭·배율을 테스트마다 직접 정하므로 고해상도 프로젝트에서는 돌리지 않는다 (playwright.config.ts의 testIgnore).
 
 const rects = () => {
   const r = (id: string) => {
@@ -25,8 +25,8 @@ for (const [width, below] of [[390, true], [600, true], [700, false], [1440, fal
   });
 }
 
-test("휴대폰: 버튼 탭으로 확대, 지도 탭으로 정확한 칸에 시설 배치", async ({ browser }) => {
-  const ctx = await browser.newContext({ ...devices["Pixel 7"] });
+test("휴대폰: 버튼 탭으로 확대, 지도 탭으로 정확한 칸에 시설 배치", async ({ browser, browserName }) => {
+  const ctx = await browser.newContext({ ...devices[browserName === "webkit" ? "iPhone 13" : "Pixel 7"] });
   const page = await ctx.newPage();
   const errors = collectErrors(page);
   await openApp(page);
