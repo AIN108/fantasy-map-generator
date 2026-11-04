@@ -1,25 +1,29 @@
 import {
-  addCity, civFromJSON, civToJSON, cloneCiv, createState, deleteCity, deleteState, ensureCivNames, makeCapital,
+  addCity, cloneCiv, createState, deleteCity, deleteState, ensureCivNames, makeCapital,
   moveCity, paintTerritory, renameCity, renameState, snapshotCiv, type CivState, type EditResult,
 } from "./civedit.ts";
-import {
-  applyBrush, BRUSH_TOOLS, decodeElevation, EditHistory, encodeElevation, type Brush, type BrushTool,
-} from "./editor.ts";
+import { applyBrush, BRUSH_TOOLS, EditHistory, type Brush, type BrushTool } from "./editor.ts";
 import {
   addFacility, addPath, addPort, addSeaRoute, addSpan, cloneInfra, toggleSpanMode, hitSpan, MAX_SPAN_LENGTH, moveSpan, spanLinks,
-  SPAN_MODE_KO, type SpanMode, type SpanPart, emptyInfra, eraseAt, FACILITY_INFO, hitPoint, infraFromJSON,
-  infraToJSON, isEmptyInfra, movePoint, routePath, routeSea, type FacilityKind, type Infra, type PointKind,
+  SPAN_MODE_KO, type SpanMode, type SpanPart, emptyInfra, eraseAt, FACILITY_INFO, hitPoint,
+  isEmptyInfra, movePoint, routePath, routeSea, type FacilityKind, type Infra, type PointKind,
 } from "./infra.ts";
 import { findCell, type Mesh } from "./mesh.ts";
 import type { NameStyle } from "./names.ts";
 import {
-  buildRenderCache, DEFAULT_LAYERS, describeCell, drawBridgeSpan, drawTunnelSpan, renderWorld, type Layers, type RenderCache,
+  buildRenderCache, DEFAULT_LAYERS, describeCell, drawBridgeSpan, drawTunnelSpan, type Layers, type RenderCache,
 } from "./render.ts";
+import { fillForm, formatHash, formatters, parseHash, RANGE_FIELDS, readForm } from "./ui/options.ts";
+import { loadSavedEdits, saveEdits as saveEdits_, type KeyValueStore } from "./ui/storage.ts";
+import { eul } from "./ui/text.ts";
+import {
+  BORDER_HINT, CITY_TOOL_HINTS, INFRA_TOOL_HINTS, type CityTool, type EditTarget, type InfraTool,
+} from "./ui/tool-hints.ts";
+import { Viewport } from "./ui/viewport.ts";
 import {
   applyInfra, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors, parseMapJSON,
-  sanitizeAnchors, terrainKey, toJSON, type NameAnchors, type WorldMap, type WorldOptions,
+  terrainKey, toJSON, validateOptions, type NameAnchors, type WorldMap, type WorldOptions,
 } from "./world.ts";
-import { anchoredView, clampView, identityView, MAX_SCALE, MIN_SCALE, sameView, toMap, zoomAt, type View } from "./view.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -28,10 +32,6 @@ const $ = <T extends HTMLElement>(id: string): T => {
 };
 
 const canvas = $<HTMLCanvasElement>("map");
-const overlay = $<HTMLCanvasElement>("overlay");
-const ctx = canvas.getContext("2d");
-const octx = overlay.getContext("2d");
-if (!ctx || !octx) throw new Error("Canvas 2D를 사용할 수 없습니다.");
 const form = $<HTMLFormElement>("controls");
 const statusEl = $("status");
 const infoEl = $("cellInfo");
@@ -40,18 +40,6 @@ const editorEl = $("editor");
 const mapWrap = canvas.parentElement!;
 const paintStateEl = $<HTMLSelectElement>("paintState");
 const mergeIntoEl = $<HTMLSelectElement>("mergeInto");
-
-const RANGE_FIELDS = ["landRatio", "states", "citiesPerState", "temperatureShift", "cells"] as const;
-type RangeField = (typeof RANGE_FIELDS)[number];
-const formatters: Record<RangeField, (v: number) => string> = {
-  landRatio: (v) => `${Math.round(v * 100)}%`,
-  states: (v) => `${v}`,
-  citiesPerState: (v) => `${v}`,
-  temperatureShift: (v) => (v === 0 ? "보통" : v > 0 ? `따뜻 +${v.toFixed(2)}` : `추움 ${v.toFixed(2)}`),
-  cells: (v) => v.toLocaleString("ko-KR"),
-};
-
-const STORAGE_KEY = "fmg:edits:v1";
 
 // ── 상태 ─────────────────────────────────────────────────────────────
 let options: WorldOptions = { ...DEFAULT_OPTIONS };
@@ -80,9 +68,6 @@ let nameMemory: Partial<Record<NameStyle, NameAnchors>> = {};
 let world: WorldMap | undefined;
 let cache: RenderCache | undefined;
 let layers: Layers = { ...DEFAULT_LAYERS };
-/** 확대·이동 상태. 지도 데이터와 무관한 보기 설정이라 저장·되돌리기에 넣지 않는다. */
-let view: View = identityView();
-let mapSize = "";
 
 /** 되돌리기 단위: 지형과 문명을 함께 보관한다. */
 interface Snapshot { elevation: Float64Array; civ?: CivState; infra: Infra }
@@ -91,250 +76,37 @@ const copySnapshot = (s: Snapshot): Snapshot => ({
 });
 const editHistory = new EditHistory<Snapshot>(50, copySnapshot);
 
-type EditTarget = "terrain" | "city" | "border" | "infra";
-type InfraTool = "road" | "rail" | "sea" | "bridge" | "tunnel" | "port" | "facility" | "move" | "toggleMode" | "erase";
-const INFRA_TOOL_HINTS: Record<InfraTool, string> = {
-  road: "출발점에서 도착점까지 끌어 놓으면 지형을 따라 도로가 생깁니다. 도시 근처에서 놓으면 도시에 붙고, 직접 놓은 다리·터널도 길로 씁니다.",
-  rail: "출발점에서 도착점까지 끌어 놓으면 철도가 생깁니다. 철도는 급경사를 피해 산을 크게 돌아갑니다.",
-  sea: "항구에서 다른 항구까지 끌어 놓으면 바다를 따라 항로가 생깁니다. 얕은 연안보다 깊은 바다를 조금 더 선호합니다.",
-  bridge: `육지에서 물 건너편 육지까지 끌어 놓으면 곧은 다리가 놓입니다 (강·호수·해협, ${MAX_SPAN_LENGTH}px까지). 도로는 도로용, 철도는 철도용 다리만 건넙니다.`,
-  tunnel: `두 육지 지점 사이를 끌어 놓으면 곧은 터널이 놓입니다. 산을 관통하거나 바다 밑으로 지날 수 있습니다 (${MAX_SPAN_LENGTH}px까지). 도로는 도로용, 철도는 철도용 터널만 지납니다.`,
-  port: "바다에 닿은 해안을 누르면 항구가 생깁니다.",
-  facility: "고른 종류의 시설물을 누른 자리에 둡니다. 등대는 해안에만, 공항은 평지에만 둘 수 있습니다.",
-  toggleMode: "다리·터널을 누르면 도로용 ↔ 철도용이 바뀝니다. 그 위를 지나던 원래 용도의 길은 다른 길로 다시 이어 봅니다.",
-  move: "항구·시설물·다리·터널을 끌어 옮깁니다. 다리·터널은 끝점을 끌면 그 끝만, 가운데를 끌면 통째로 옮겨지고, 지나던 도로·철도가 따라갑니다. 항구를 옮기면 이어진 항로도 다시 계산합니다.",
-  erase: "누른 곳에서 가장 가까운 시설을 지웁니다. 자동 다리·터널 표기를 누르면 그 표기만 숨깁니다.",
-};
-type CityTool = "move" | "add" | "delete" | "rename" | "capital" | "newState";
-const CITY_TOOL_HINTS: Record<CityTool, string> = {
-  move: "도시를 끌어 옮깁니다. 수도를 옮기면 그 자리가 수도의 나라 땅이 됩니다.",
-  add: "빈 땅을 누르면 도시가 생깁니다. 이름은 자동으로 붙고, 나중에 바꿀 수 있습니다.",
-  delete: "도시를 누르면 지웁니다. 수도는 지울 수 없습니다.",
-  rename: "도시를 누르고 새 이름을 입력합니다.",
-  capital: "도시를 누르면 그 도시가 속한 나라의 수도가 됩니다.",
-  newState: "도시를 누르면 그 도시를 수도로 하는 새 나라가 생깁니다. 원래 나라의 영토는 두 수도 중 가까운 쪽으로 나뉩니다.",
-};
 let editMode = false;
 let editTarget: EditTarget = "terrain";
 let cityTool: CityTool = "move";
 let infraTool: InfraTool = "road";
 const brush: Brush = { tool: "raise", radius: 45, strength: 0.5 };
 
-// ── URL 해시 ↔ 옵션 (링크로 같은 지도를 공유) ───────────────────────
-function readHash(): Partial<WorldOptions> {
-  const p = new URLSearchParams(location.hash.slice(1));
-  const out: Partial<WorldOptions> = {};
-  const seed = p.get("seed");
-  if (seed) out.seed = seed.slice(0, 40);
-  const style = p.get("style");
-  if (style === "korean" || style === "western") out.nameStyle = style;
-  const shape = p.get("shape");
-  if (shape === "continent" || shape === "archipelago") out.shape = shape;
-  for (const key of RANGE_FIELDS) {
-    const v = Number(p.get(key));
-    if (p.has(key) && Number.isFinite(v)) (out as Record<string, number>)[key] = v;
-  }
-  return out;
-}
-
-function writeHash(o: WorldOptions): void {
-  const p = new URLSearchParams({
-    seed: o.seed, style: o.nameStyle, shape: o.shape,
-    landRatio: String(o.landRatio), states: String(o.states), citiesPerState: String(o.citiesPerState),
-    temperatureShift: String(o.temperatureShift), cells: String(o.cells),
-  });
-  history.replaceState(null, "", `#${p}`);
-}
-
-// ── 폼 ↔ 옵션 ────────────────────────────────────────────────────────
-function fillForm(o: WorldOptions): void {
-  $<HTMLInputElement>("seed").value = o.seed;
-  $<HTMLSelectElement>("nameStyle").value = o.nameStyle;
-  $<HTMLSelectElement>("shape").value = o.shape;
-  for (const key of RANGE_FIELDS) {
-    $<HTMLInputElement>(key).value = String(o[key]);
-    $(`${key}Out`).textContent = formatters[key](o[key]);
-  }
-}
-
-function readForm(): WorldOptions {
-  const num = (id: RangeField): number => Number($<HTMLInputElement>(id).value);
-  return {
-    ...DEFAULT_OPTIONS,
-    seed: $<HTMLInputElement>("seed").value.trim(),
-    nameStyle: $<HTMLSelectElement>("nameStyle").value === "western" ? "western" : "korean",
-    shape: $<HTMLSelectElement>("shape").value === "archipelago" ? "archipelago" : "continent",
-    landRatio: num("landRatio"),
-    states: num("states"),
-    citiesPerState: num("citiesPerState"),
-    temperatureShift: num("temperatureShift"),
-    cells: num("cells"),
-  };
-}
+/** 지도 그리기와 확대·이동. 확대·이동 상태는 지도 데이터와 무관한 보기 설정이라 저장·되돌리기에 넣지 않는다. */
+const viewport = new Viewport(canvas, $<HTMLCanvasElement>("overlay"), {
+  zoomIn: $<HTMLButtonElement>("zoomIn"),
+  zoomOut: $<HTMLButtonElement>("zoomOut"),
+  zoomReset: $<HTMLButtonElement>("zoomReset"),
+  level: $("zoomLevel"),
+}, {
+  scene: () => (world && cache ? { world, cache, layers } : undefined),
+  editMode: () => editMode,
+  editDown: (e) => onEditPointerDown(e),
+  editMove: (e) => onEditPointerMove(e),
+  editEnd: (e) => endPointer(e),
+  editCancel: () => cancelPointerEdit(),
+  viewChanged: (x, y) => {
+    if (editMode && x !== undefined && y !== undefined) drawCursor(x, y);
+    else viewport.clearOverlay();
+  },
+  pointerLeave: () => {
+    if (!painting && draggingCity < 0 && routeStart < 0 && !draggingPoint && !draggingSpan) viewport.clearOverlay();
+  },
+});
 
 function setStatus(text: string, isError = false): void {
   statusEl.textContent = text;
   statusEl.classList.toggle("error", isError);
-}
-
-/**
- * 목적격 조사: 마지막 글자에 받침이 있으면 '을', 없으면 '를'. 한글로 끝나지 않으면(서구풍 지명 등) '을(를)'.
- */
-function eul(word: string): string {
-  const w = word.replace(/['"’)\s]+$/u, ""); // "항구 '하늬항'"처럼 따옴표로 끝나면 그 앞 글자로 판단
-  const code = w.charCodeAt(w.length - 1) - 0xac00;
-  if (!(code >= 0 && code <= 11171)) return "을(를)";
-  return code % 28 === 0 ? "를" : "을";
-}
-
-// ── 그리기 ───────────────────────────────────────────────────────────
-// 좌표계 세 가지: 지도 좌표(메시), 보기 좌표(지도 크기 options.width×height 기준의 화면 위치, View가 다루는 값),
-// 기기 픽셀(캔버스 실제 해상도 = 화면 표시 크기 × devicePixelRatio). pixelRatio()가 보기 좌표 → 기기 픽셀 배율이다.
-const pixelRatio = (): number => canvas.width / options.width;
-
-/**
- * 좁은 화면에서 지명·도시·시설 표시를 키우는 배율. 지도를 표시 크기로 줄였을 때 글자가
- * 원래 크기의 MIN_TEXT_RATIO보다 작아지지 않게 한다 (넓은 화면에서는 1, 휴대폰에서는 약 3).
- */
-const MIN_TEXT_RATIO = 0.85;
-function textScale(): number {
-  const cssWidth = canvas.getBoundingClientRect().width;
-  if (!(cssWidth > 0)) return 1;
-  return Math.min(3, Math.max(1, MIN_TEXT_RATIO / (cssWidth / options.width)));
-}
-
-/** 지명을 뺀 전체 지도 사본 (확대·이동 중 늘려 쓰는 바탕, 기기 픽셀 해상도) */
-const baseCanvas = document.createElement("canvas");
-let baseFresh = false;
-
-/** 기기 픽셀 해상도를 화면 표시 크기에 맞춘다. 바뀌었으면 true. */
-function syncBacking(): boolean {
-  const rect = canvas.getBoundingClientRect();
-  const dpr = Math.min(3, Math.max(1, window.devicePixelRatio || 1));
-  // 화면에 아직 그려지지 않았으면(폭 0) 지도 크기를 그대로 쓴다. 너무 큰 캔버스는 막는다.
-  const cssWidth = rect.width > 0 ? rect.width : options.width;
-  const w = Math.max(1, Math.min(4096, Math.round(cssWidth * dpr)));
-  const h = Math.max(1, Math.round((w * options.height) / options.width));
-  if (canvas.width === w && canvas.height === h) return false;
-  canvas.width = overlay.width = w;
-  canvas.height = overlay.height = h;
-  baseFresh = false;
-  return true;
-}
-
-/** 칠하는 동안 바탕을 그릴 낮은 해상도 캔버스 (화면 표시 크기 = DPR 1) */
-const lowCanvas = document.createElement("canvas");
-
-/**
- * 현재 보기(확대·이동)로 지도를 다시 그린다.
- * fast: 칠하는 동안에는 바탕을 화면 표시 해상도(DPR 1)로 그려 늘려 쓰고 지명만 기기 해상도로 얹는다.
- * 고해상도 화면에서 픽셀 수가 4~9배라 칠하기가 느려지는 것을 막는다. 손을 떼면 선명하게 다시 그린다.
- */
-function draw(fast = false): void {
-  if (!world || !cache) return;
-  clearTimeout(sharpTimer);
-  const s = view.scale, r = pixelRatio();
-  ctx!.setTransform(1, 0, 0, 1, 0, 0);
-  const cssWidth = Math.round(canvas.getBoundingClientRect().width);
-  if (fast && cssWidth > 0 && cssWidth < canvas.width) {
-    baseFresh = false;
-    const lr = cssWidth / options.width;
-    lowCanvas.width = cssWidth;
-    lowCanvas.height = Math.max(1, Math.round((cssWidth * options.height) / options.width));
-    const l = lowCanvas.getContext("2d")!;
-    l.setTransform(s * lr, 0, 0, s * lr, -view.x * s * lr, -view.y * s * lr);
-    renderWorld(l, world, cache, layers, s, "base", textScale());
-    ctx!.clearRect(0, 0, canvas.width, canvas.height);
-    ctx!.drawImage(lowCanvas, 0, 0, canvas.width, canvas.height);
-    ctx!.setTransform(s * r, 0, 0, s * r, -view.x * s * r, -view.y * s * r);
-    renderWorld(ctx!, world, cache, layers, s, "labels", textScale());
-  } else if (s === 1) {
-    // 전체 보기: 바탕을 사본에 그려 옮기고 지명만 덧그린다 (사본을 따로 만드는 비용이 들지 않는다).
-    renderBase();
-    ctx!.clearRect(0, 0, canvas.width, canvas.height);
-    ctx!.drawImage(baseCanvas, 0, 0);
-    ctx!.setTransform(r, 0, 0, r, 0, 0);
-    renderWorld(ctx!, world, cache, layers, 1, "labels", textScale());
-  } else {
-    baseFresh = false;
-    ctx!.setTransform(s * r, 0, 0, s * r, -view.x * s * r, -view.y * s * r);
-    renderWorld(ctx!, world, cache, layers, s, "all", textScale());
-  }
-  ctx!.setTransform(1, 0, 0, 1, 0, 0);
-}
-
-function renderBase(): void {
-  if (!world || !cache) return;
-  const r = pixelRatio();
-  baseCanvas.width = canvas.width;
-  baseCanvas.height = canvas.height;
-  const b = baseCanvas.getContext("2d")!;
-  b.setTransform(r, 0, 0, r, 0, 0);
-  renderWorld(b, world, cache, layers, 1, "base", textScale());
-  baseFresh = true;
-}
-
-/** PNG 저장용: 보고 있는 화면과 관계없이 지도 전체를 원래 크기(options.width×height)로 그린다. */
-function exportCanvas(): HTMLCanvasElement {
-  const out = document.createElement("canvas");
-  out.width = options.width;
-  out.height = options.height;
-  if (world && cache) renderWorld(out.getContext("2d")!, world, cache, layers);
-  return out;
-}
-
-// ── 확대·이동 ────────────────────────────────────────────────────────
-let sharpTimer = 0;
-let fastQueued = false;
-/** 마지막으로 마우스가 있던 보기 좌표 (휠로 확대한 뒤 커서를 다시 그리기 위해) */
-let hoverPx: [number, number] | undefined;
-
-/**
- * 보기를 바꾼다. 움직이는 동안에는 바탕 사본을 늘리고 지명만 새로 얹어 빠르게 보여 주고,
- * 잠시 멈추면 그 배율로 선명하게 다시 그린다.
- */
-function setView(next: View): void {
-  const clamped = clampView(next, options.width, options.height);
-  if (sameView(clamped, view)) return;
-  view = clamped;
-  syncZoomUi();
-  if (!fastQueued) {
-    fastQueued = true;
-    requestAnimationFrame(() => {
-      fastQueued = false;
-      drawFast();
-      if (editMode && hoverPx) drawCursor(...toMap(view, ...hoverPx));
-      else clearOverlay();
-    });
-  }
-  clearTimeout(sharpTimer);
-  sharpTimer = window.setTimeout(draw, 140);
-}
-
-function drawFast(): void {
-  if (!world || !cache) return;
-  if (!baseFresh) renderBase();
-  const s = view.scale, r = pixelRatio();
-  const w = canvas.width, h = canvas.height;
-  ctx!.setTransform(1, 0, 0, 1, 0, 0);
-  ctx!.clearRect(0, 0, w, h);
-  ctx!.drawImage(baseCanvas, view.x * r, view.y * r, w / s, h / s, 0, 0, w, h);
-  // 지명은 늘리지 않고 현재 배율에 맞춰 새로 배치한다 (움직이는 동안에도 글자 크기가 그대로).
-  ctx!.setTransform(s * r, 0, 0, s * r, -view.x * s * r, -view.y * s * r);
-  renderWorld(ctx!, world, cache, layers, s, "labels", textScale());
-  ctx!.setTransform(1, 0, 0, 1, 0, 0);
-}
-
-function zoomBy(factor: number): void {
-  setView(zoomAt(view, factor, options.width / 2, options.height / 2, options.width, options.height));
-}
-
-function syncZoomUi(): void {
-  mapWrap.classList.toggle("zoomed", view.scale > MIN_SCALE + 1e-6);
-  $("zoomLevel").textContent = `${Math.round(view.scale * 100)}%`;
-  $<HTMLButtonElement>("zoomIn").disabled = view.scale >= MAX_SCALE - 1e-6;
-  $<HTMLButtonElement>("zoomOut").disabled = view.scale <= MIN_SCALE + 1e-6;
-  $<HTMLButtonElement>("zoomReset").disabled = view.scale <= MIN_SCALE + 1e-6;
 }
 
 function renderLegend(w: WorldMap): void {
@@ -415,18 +187,13 @@ function derive(natureOnly = false): void {
     }
     world = applyInfra(derived, infra);
     cache = buildRenderCache(world);
-    if (mapSize !== `${options.width}x${options.height}`) {
-      mapSize = `${options.width}x${options.height}`;
-      canvas.style.aspectRatio = overlay.style.aspectRatio = `${options.width} / ${options.height}`;
-      view = identityView();
-      syncZoomUi();
-    }
-    syncBacking();
-    draw(painting); // 칠하는 중이면 빠르게, 손을 뗀 뒤(commit)에는 선명하게
+    viewport.setMapSize(options.width, options.height);
+    viewport.syncBacking();
+    viewport.draw(painting); // 칠하는 중이면 빠르게, 손을 뗀 뒤(commit)에는 선명하게
     if (natureOnly) return;
     renderLegend(world);
     renderPaintStates(world);
-    writeHash(options);
+    history.replaceState(null, "", formatHash(options));
     const notes = [
       edited ? "지형 편집됨" : "", civ ? "도시·국경 직접 편집됨" : "", infra.roads ? "도로 고정됨" : "",
     ].filter(Boolean);
@@ -457,6 +224,8 @@ function generate(
   } = {},
 ): void {
   try {
+    // 범위를 벗어난 옵션(URL로 들어온 값 등)으로 메시부터 만들면 셀 수에 따라 수십 초 멈출 수 있다.
+    validateOptions(next);
     const nextTerrainKey = terrainKey(next);
     const restoring = !!opts.restoreFrom;
     if (hasEdits() && nextTerrainKey !== currentTerrainKey && !restoring) {
@@ -503,55 +272,23 @@ const differs = (a: Float64Array, b: Float64Array): boolean => a.some((v, i) => 
 const hasEdits = (): boolean => edited || !!civ || !isEmptyInfra(infra);
 
 // ── 편집 내용 브라우저 저장 (이 브라우저에만 남는 편의 기능) ─────────
+/** 사생활 보호 모드 등에서는 localStorage에 접근만 해도 예외가 날 수 있다. */
+function browserStore(): KeyValueStore | undefined {
+  try { return window.localStorage; } catch { return undefined; }
+}
+
 function saveEdits(): void {
-  try {
-    if (hasEdits() && elevation) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        terrainKey: currentTerrainKey,
-        data: encodeElevation(elevation),
-        names: nameMemory,
-        civ: civ ? civToJSON(civ) : undefined,
-        infra: isEmptyInfra(infra) ? undefined : infraToJSON(infra),
-      }));
-    } else {
-      localStorage.removeItem(STORAGE_KEY);
-    }
-  } catch {
-    // 저장소를 쓸 수 없는 환경(사생활 보호 모드 등)에서는 조용히 건너뛴다.
-  }
+  const store = browserStore();
+  if (!store || !elevation) return;
+  saveEdits_(store, currentTerrainKey, hasEdits(), { elevation, names: nameMemory, civ, infra });
 }
 
-interface SavedEdits {
-  elevation: Float64Array;
-  names: Partial<Record<NameStyle, NameAnchors>>;
-  civ?: CivState;
-  infra?: Infra;
-}
-
-function loadSavedEdits(o: WorldOptions): SavedEdits | undefined {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return undefined;
-    const saved = JSON.parse(raw) as {
-      terrainKey?: unknown; data?: unknown; names?: Record<string, unknown>; civ?: unknown; infra?: unknown;
-    };
-    if (saved.terrainKey !== terrainKey(o) || typeof saved.data !== "string") return undefined;
-    const count = createMesh(o).count;
-    const elevation = decodeElevation(saved.data, count);
-    if (!elevation) return undefined;
-    const names: Partial<Record<NameStyle, NameAnchors>> = {};
-    for (const style of ["korean", "western"] as const) {
-      const a = sanitizeAnchors(saved.names?.[style]);
-      if (a && a.nameStyle === style) names[style] = a;
-    }
-    return {
-      elevation, names,
-      civ: saved.civ === undefined ? undefined : civFromJSON(saved.civ, count),
-      infra: saved.infra === undefined ? undefined : infraFromJSON(saved.infra, count),
-    };
-  } catch {
-    return undefined;
-  }
+/** 시작할 때 이 브라우저에 저장된 편집을 읽는다. 옵션이 잘못됐으면 없는 것으로 (오류는 generate가 보여 준다). */
+function loadStartupEdits(o: WorldOptions): ReturnType<typeof loadSavedEdits> {
+  const store = browserStore();
+  if (!store) return undefined;
+  try { validateOptions(o); } catch { return undefined; }
+  return loadSavedEdits(store, terrainKey(o), () => createMesh(o).count);
 }
 
 // ── 편집 모드·도구 ──────────────────────────────────────────────────
@@ -560,7 +297,7 @@ function setEditMode(on: boolean): void {
   $<HTMLInputElement>("editMode").checked = on;
   editorEl.classList.toggle("active", on);
   mapWrap.classList.toggle("editing", on);
-  if (!on) clearOverlay();
+  if (!on) viewport.clearOverlay();
 }
 
 function updateHint(): void {
@@ -570,7 +307,7 @@ function updateHint(): void {
       ? CITY_TOOL_HINTS[cityTool]
       : editTarget === "infra"
         ? INFRA_TOOL_HINTS[infraTool]
-        : "고른 국가의 영토로 칠합니다. 다른 나라의 수도 자리는 칠해지지 않습니다.";
+        : BORDER_HINT;
   const civNote = (editTarget === "city" || editTarget === "border") && !civ
     ? " (처음 편집하면 자동 배치를 멈추고 지금 상태를 고정합니다)"
     : editTarget === "infra" && (infraTool === "road" || infraTool === "erase") && !infra.roads
@@ -608,59 +345,22 @@ function setTool(tool: BrushTool): void {
   updateHint();
 }
 
-/** 화면(client) 좌표 → 보기 좌표 (지도 크기 기준, 확대 전) */
-function canvasPx(e: { clientX: number; clientY: number }): [number, number] {
-  const rect = canvas.getBoundingClientRect();
-  return [((e.clientX - rect.left) / Math.max(1, rect.width)) * options.width, ((e.clientY - rect.top) / Math.max(1, rect.height)) * options.height];
-}
-
-/** 화면 좌표 → 지도 좌표 (확대·이동 반영) */
-function toMapCoords(e: { clientX: number; clientY: number }): [number, number] {
-  return toMap(view, ...canvasPx(e));
-}
-
-/** 화면 크기·확대 배율과 관계없이 손가락·마우스로 누르기 쉬운 선택 반경 (지도 좌표) */
-const hitRadius = (): number => (14 * (options.width / Math.max(1, canvas.getBoundingClientRect().width))) / view.scale;
-
-/** 덧그림 캔버스를 비우고, 이후 그리기가 지도 좌표를 쓰도록 보기 변환을 건다. */
-function clearOverlay(): void {
-  octx!.setTransform(1, 0, 0, 1, 0, 0);
-  octx!.clearRect(0, 0, overlay.width, overlay.height);
-  const k = view.scale * pixelRatio();
-  octx!.setTransform(k, 0, 0, k, -view.x * k, -view.y * k);
-}
-
-function strokeCircle(x: number, y: number, r: number, dash: number[] = []): void {
-  const o = octx!;
-  // 커서 테두리는 확대해도 화면에서 같은 굵기로 보이게 한다.
-  o.setLineDash(dash.map((d) => d / view.scale));
-  o.lineWidth = 2 / view.scale;
-  o.strokeStyle = "rgba(0,0,0,0.55)";
-  o.beginPath();
-  o.arc(x, y, r, 0, Math.PI * 2);
-  o.stroke();
-  o.lineWidth = 1 / view.scale;
-  o.strokeStyle = "rgba(255,255,255,0.95)";
-  o.stroke();
-  o.setLineDash([]);
-}
-
 /** 편집 대상에 맞는 커서를 덧그린다 (브러시 원, 도시 강조, 끌고 있는 도시의 새 위치). */
 function drawCursor(x: number, y: number): void {
-  clearOverlay();
+  viewport.clearOverlay();
   if (!editMode || !world) return;
   if (editTarget === "infra") {
     drawInfraCursor(x, y);
     return;
   }
   if (editTarget !== "city") {
-    strokeCircle(x, y, brush.radius);
+    viewport.strokeCircle(x, y, brush.radius);
     return;
   }
   if (draggingCity >= 0 && civ && mesh) {
     const from = civ.cities[draggingCity].cell;
     const to = findCell(mesh, x, y);
-    const o = octx!;
+    const o = viewport.octx;
     o.setLineDash([4, 4]);
     o.strokeStyle = "rgba(0,0,0,0.6)";
     o.beginPath();
@@ -679,15 +379,15 @@ function drawCursor(x: number, y: number): void {
   const city = nearestWorldCity(x, y);
   if (city >= 0) {
     const c = world.cities[city];
-    strokeCircle(world.mesh.x[c.cell], world.mesh.y[c.cell], 10);
+    viewport.strokeCircle(world.mesh.x[c.cell], world.mesh.y[c.cell], 10);
   } else if (cityTool === "add") {
-    strokeCircle(x, y, 5, [3, 3]);
+    viewport.strokeCircle(x, y, 5, [3, 3]);
   }
 }
 
 function drawInfraCursor(x: number, y: number): void {
   if (!world || !mesh) return;
-  const o = octx!;
+  const o = viewport.octx;
   if (draggingPoint) {
     const item = draggingPoint.kind === "port" ? infra.ports[draggingPoint.index] : infra.facilities[draggingPoint.index];
     if (!item) return;
@@ -700,7 +400,7 @@ function drawInfraCursor(x: number, y: number): void {
     o.lineTo(mesh.x[to], mesh.y[to]);
     o.stroke();
     o.setLineDash([]);
-    strokeCircle(mesh.x[to], mesh.y[to], 8);
+    viewport.strokeCircle(mesh.x[to], mesh.y[to], 8);
     return;
   }
   if (isSpanTool() && routeStart >= 0) {
@@ -710,7 +410,7 @@ function drawInfraCursor(x: number, y: number): void {
     o.globalAlpha = tooLong ? 0.4 : 0.9;
     if (infraTool === "bridge") drawBridgeSpan(o, ax, ay, bx, by, spanMode()); else drawTunnelSpan(o, ax, ay, bx, by, spanMode());
     o.globalAlpha = 1;
-    strokeCircle(ax, ay, 5);
+    viewport.strokeCircle(ax, ay, 5);
     return;
   }
   if (isLineTool() && routeStart >= 0) {
@@ -725,17 +425,17 @@ function drawInfraCursor(x: number, y: number): void {
       o.strokeStyle = infraTool === "rail" ? "#2b2b2b" : infraTool === "sea" ? "rgba(18,38,78,0.95)" : "rgba(110,70,40,0.95)";
       o.stroke();
     }
-    strokeCircle(mesh.x[routeStart], mesh.y[routeStart], 5);
+    viewport.strokeCircle(mesh.x[routeStart], mesh.y[routeStart], 5);
     return;
   }
   if (infraTool === "sea") {
     const port = snapToPort(x, y);
-    if (port >= 0) strokeCircle(mesh.x[port], mesh.y[port], 10);
-    else strokeCircle(x, y, 6, [3, 3]);
+    if (port >= 0) viewport.strokeCircle(mesh.x[port], mesh.y[port], 10);
+    else viewport.strokeCircle(x, y, 6, [3, 3]);
     return;
   }
   if (infraTool === "toggleMode") {
-    const span = hitSpan(mesh, infra, x, y, hitRadius());
+    const span = hitSpan(mesh, infra, x, y, viewport.hitRadius());
     if (span) {
       const sp = (span.kind === "bridge" ? infra.bridges : infra.tunnels)[span.index];
       o.lineWidth = 7;
@@ -744,7 +444,7 @@ function drawInfraCursor(x: number, y: number): void {
       o.moveTo(mesh.x[sp.a], mesh.y[sp.a]);
       o.lineTo(mesh.x[sp.b], mesh.y[sp.b]);
       o.stroke();
-    } else strokeCircle(x, y, 6, [3, 3]);
+    } else viewport.strokeCircle(x, y, 6, [3, 3]);
     return;
   }
   if (infraTool === "move") {
@@ -760,10 +460,10 @@ function drawInfraCursor(x: number, y: number): void {
       o.globalAlpha = 1;
       return;
     }
-    const hit = hitPoint(mesh, infra, x, y, hitRadius());
+    const hit = hitPoint(mesh, infra, x, y, viewport.hitRadius());
     const item = hit && (hit.kind === "port" ? infra.ports[hit.index] : infra.facilities[hit.index]);
-    if (item) { strokeCircle(mesh.x[item.cell], mesh.y[item.cell], 10); return; }
-    const span = hitSpan(mesh, infra, x, y, hitRadius());
+    if (item) { viewport.strokeCircle(mesh.x[item.cell], mesh.y[item.cell], 10); return; }
+    const span = hitSpan(mesh, infra, x, y, viewport.hitRadius());
     if (span) {
       const sp = (span.kind === "bridge" ? infra.bridges : infra.tunnels)[span.index];
       if (span.part === "body") {
@@ -775,14 +475,14 @@ function drawInfraCursor(x: number, y: number): void {
         o.stroke();
       } else {
         const c = span.part === "a" ? sp.a : sp.b;
-        strokeCircle(mesh.x[c], mesh.y[c], 7);
+        viewport.strokeCircle(mesh.x[c], mesh.y[c], 7);
       }
     }
     return;
   }
   const city = infraTool === "road" || infraTool === "rail" ? nearestWorldCity(x, y) : -1;
-  if (city >= 0) strokeCircle(mesh.x[world.cities[city].cell], mesh.y[world.cities[city].cell], 10);
-  else strokeCircle(x, y, infraTool === "erase" ? hitRadius() : 6, [3, 3]);
+  if (city >= 0) viewport.strokeCircle(mesh.x[world.cities[city].cell], mesh.y[world.cities[city].cell], 10);
+  else viewport.strokeCircle(x, y, infraTool === "erase" ? viewport.hitRadius() : 6, [3, 3]);
 }
 
 /** 끄는 동안 미리보기 경로를 프레임당 한 번만 계산한다 */
@@ -805,7 +505,7 @@ function queueRoutePreview(x: number, y: number): void {
 /** 화면에 보이는 도시 중 커서와 가장 가까운 것 (world.cities 인덱스) */
 function nearestWorldCity(x: number, y: number): number {
   if (!world) return -1;
-  const r2 = hitRadius() ** 2;
+  const r2 = viewport.hitRadius() ** 2;
   let best = -1, bestD = r2;
   world.cities.forEach((c, i) => {
     const d = (world!.mesh.x[c.cell] - x) ** 2 + (world!.mesh.y[c.cell] - y) ** 2;
@@ -883,7 +583,7 @@ function movedSpanCells(x: number, y: number): [number, number] | null {
 /** 항로 끝점: 가까운 (보이는) 항구 셀, 없으면 -1 */
 function snapToPort(x: number, y: number): number {
   if (!world || !mesh) return -1;
-  const r2 = hitRadius() ** 2;
+  const r2 = viewport.hitRadius() ** 2;
   let best = -1, bestD = r2;
   for (const p of world.ports) {
     const d = (mesh.x[p.cell] - x) ** 2 + (mesh.y[p.cell] - y) ** 2;
@@ -912,7 +612,7 @@ function handleInfraClick(x: number, y: number): void {
     const kind = $<HTMLSelectElement>("facilityKind").value as FacilityKind;
     applyInfraEdit((inf) => addFacility(world!, inf, cell, kind, takeFeatureName()), `${FACILITY_INFO[kind]?.ko ?? "시설"}${eul(FACILITY_INFO[kind]?.ko ?? "시설")} 놓았습니다.`);
   } else if (infraTool === "toggleMode") {
-    const hit = hitSpan(mesh, infra, x, y, hitRadius());
+    const hit = hitSpan(mesh, infra, x, y, viewport.hitRadius());
     if (!hit) { setStatus("용도를 바꿀 다리·터널을 눌러 주세요.", true); return; }
     const span = (hit.kind === "bridge" ? infra.bridges : infra.tunnels)[hit.index];
     const label = hit.kind === "bridge" ? "다리" : "터널";
@@ -930,7 +630,7 @@ function handleInfraClick(x: number, y: number): void {
   } else if (infraTool === "erase") {
     let removed: string | null = null;
     applyInfraEdit((inf) => {
-      removed = eraseAt(mesh!, inf, x, y, hitRadius(), autoRoads, world!);
+      removed = eraseAt(mesh!, inf, x, y, viewport.hitRadius(), autoRoads, world!);
       return removed ? null : "지울 시설이 없습니다. 항구·시설물·도로·철도 가까이를 눌러 주세요.";
     });
     if (removed) {
@@ -1040,36 +740,36 @@ function handleCityClick(x: number, y: number): void {
 function onEditPointerDown(e: PointerEvent): void {
   if (!editMode || e.button !== 0 || !mesh || !elevation || !world) return;
   e.preventDefault();
-  const [x, y] = toMapCoords(e);
+  const [x, y] = viewport.toMapCoords(e);
   if (editTarget === "infra") {
     if (infraTool === "road" || infraTool === "rail") {
       routeStart = snapToCity(x, y);
       routePreview = null;
-      capturePointer(e.pointerId);
+      viewport.capturePointer(e.pointerId);
     } else if (isSpanTool()) {
       routeStart = findCell(mesh, x, y);
-      capturePointer(e.pointerId);
+      viewport.capturePointer(e.pointerId);
     } else if (infraTool === "sea") {
       const start = snapToPort(x, y);
       if (start < 0) { setStatus("항로는 항구에서 시작합니다. 항구를 눌러 끌어 주세요.", true); return; }
       routeStart = start;
       routePreview = null;
-      capturePointer(e.pointerId);
+      viewport.capturePointer(e.pointerId);
     } else if (infraTool === "move") {
-      draggingPoint = hitPoint(mesh, infra, x, y, hitRadius());
+      draggingPoint = hitPoint(mesh, infra, x, y, viewport.hitRadius());
       if (!draggingPoint) {
-        const span = hitSpan(mesh, infra, x, y, hitRadius());
+        const span = hitSpan(mesh, infra, x, y, viewport.hitRadius());
         if (!span) { setStatus("옮길 항구·시설물·다리·터널을 눌러 끌어 주세요.", true); return; }
         draggingSpan = { ...span, grabX: x, grabY: y };
       }
-      capturePointer(e.pointerId);
+      viewport.capturePointer(e.pointerId);
     } else {
       handleInfraClick(x, y);
     }
     return;
   }
   if (editTarget === "terrain") {
-    capturePointer(e.pointerId);
+    viewport.capturePointer(e.pointerId);
     editHistory.record(snap());
     flattenTarget = elevation[findCell(mesh, x, y)];
     painting = true;
@@ -1078,7 +778,7 @@ function onEditPointerDown(e: PointerEvent): void {
   } else if (editTarget === "border") {
     borderBefore = copySnapshot(snap());
     if (!ensureCiv()) return;
-    capturePointer(e.pointerId);
+    viewport.capturePointer(e.pointerId);
     painting = true;
     lastPoint = undefined;
     paintBorderTo(x, y);
@@ -1090,14 +790,14 @@ function onEditPointerDown(e: PointerEvent): void {
     if (!c) return;
     draggingCity = c.cities.findIndex((cc) => cc.cell === world!.cities[visible].cell);
     borderBefore = before;
-    capturePointer(e.pointerId);
+    viewport.capturePointer(e.pointerId);
   } else {
     handleCityClick(x, y);
   }
 }
 
 function onEditPointerMove(e: PointerEvent): void {
-  const [x, y] = toMapCoords(e);
+  const [x, y] = viewport.toMapCoords(e);
   if (editMode) drawCursor(x, y);
   if (routeStart >= 0) {
     if (!isSpanTool()) queueRoutePreview(x, y);
@@ -1124,11 +824,11 @@ function onEditPointerMove(e: PointerEvent): void {
 
 function endPointer(e: PointerEvent): void {
   if (draggingSpan) {
-    const [x, y] = toMapCoords(e);
+    const [x, y] = viewport.toMapCoords(e);
     const cells = movedSpanCells(x, y);
     const target = draggingSpan;
     draggingSpan = null;
-    clearOverlay();
+    viewport.clearOverlay();
     if (!cells || !world) return;
     const span = (target.kind === "bridge" ? infra.bridges : infra.tunnels)[target.index];
     if (!span || (span.a === cells[0] && span.b === cells[1])) return;
@@ -1147,9 +847,9 @@ function endPointer(e: PointerEvent): void {
   if (draggingPoint) {
     const target = draggingPoint;
     draggingPoint = null;
-    clearOverlay();
+    viewport.clearOverlay();
     if (!world || !mesh) return;
-    const [x, y] = toMapCoords(e);
+    const [x, y] = viewport.toMapCoords(e);
     const cell = findCell(mesh, x, y);
     const item = target.kind === "port" ? infra.ports[target.index] : infra.facilities[target.index];
     if (!item || item.cell === cell) return;
@@ -1168,9 +868,9 @@ function endPointer(e: PointerEvent): void {
     routeStart = -1;
     routePreview = null;
     routeQueued = false;
-    clearOverlay();
+    viewport.clearOverlay();
     if (!world || !mesh) return;
-    const [x, y] = toMapCoords(e);
+    const [x, y] = viewport.toMapCoords(e);
     if (isSpanTool()) {
       const kind = infraTool === "bridge" ? "bridge" : "tunnel";
       const end = findCell(mesh, x, y);
@@ -1201,9 +901,9 @@ function endPointer(e: PointerEvent): void {
     draggingCity = -1;
     const before = borderBefore;
     borderBefore = undefined;
-    clearOverlay();
+    viewport.clearOverlay();
     if (!mesh || !elevation || !world || !civ || !before) return;
-    const [x, y] = toMapCoords(e);
+    const [x, y] = viewport.toMapCoords(e);
     const cell = findCell(mesh, x, y);
     if (cell === civ.cities[index]?.cell) {
       civ = before.civ; // 제자리에 놓으면 아무것도 하지 않은 것으로 (자동 배치 고정도 취소)
@@ -1256,117 +956,9 @@ function cancelPointerEdit(): void {
   routeQueued = false;
   draggingPoint = null;
   draggingSpan = null;
-  clearOverlay();
+  viewport.clearOverlay();
   if (changed) commit();
 }
-
-/** 포인터를 캔버스에 붙잡는다. 이미 떼어진 포인터면 조용히 넘어간다. */
-function capturePointer(id: number): void {
-  try { canvas.setPointerCapture(id); } catch { /* 붙잡지 못해도 캔버스 안에서는 그대로 동작한다 */ }
-}
-
-// 누르고 있는 포인터 (캔버스 픽셀 좌표). 두 개가 되면 두 손가락 확대·이동.
-const pointers = new Map<number, [number, number]>();
-let pan: { id: number; last: [number, number] } | null = null;
-let pinch: { mx: number; my: number; dist: number; scale: number } | null = null;
-/** 두 손가락 제스처 뒤 남은 손가락으로는 편집하지 않는다 (모두 뗄 때까지). */
-let gestureLock = false;
-let spaceHeld = false;
-let hovering = false;
-
-function pinchPoints(): { mid: [number, number]; dist: number } {
-  const [a, b] = [...pointers.values()];
-  return { mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], dist: Math.max(1, Math.hypot(a[0] - b[0], a[1] - b[1])) };
-}
-
-canvas.addEventListener("pointerdown", (e) => {
-  pointers.set(e.pointerId, canvasPx(e));
-  if (pointers.size === 2) {
-    e.preventDefault();
-    cancelPointerEdit();
-    pan = null;
-    mapWrap.classList.remove("panning");
-    const { mid, dist } = pinchPoints();
-    const [mx, my] = toMap(view, ...mid);
-    pinch = { mx, my, dist, scale: view.scale };
-    gestureLock = true;
-    capturePointer(e.pointerId);
-    return;
-  }
-  if (pointers.size > 2 || gestureLock) return;
-  // 이동: 가운데·오른쪽 버튼, 편집 모드가 아닐 때의 왼쪽 버튼, 편집 중 스페이스바 + 왼쪽 버튼
-  const wantsPan = e.button === 1 || e.button === 2 || (e.button === 0 && (!editMode || spaceHeld));
-  if (wantsPan) {
-    e.preventDefault();
-    pan = { id: e.pointerId, last: canvasPx(e) };
-    mapWrap.classList.add("panning");
-    capturePointer(e.pointerId);
-    return;
-  }
-  onEditPointerDown(e);
-});
-
-canvas.addEventListener("pointermove", (e) => {
-  const px = canvasPx(e);
-  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, px);
-  if (pinch) {
-    if (pointers.size >= 2) {
-      const { mid, dist } = pinchPoints();
-      setView(anchoredView(pinch.mx, pinch.my, mid[0], mid[1], pinch.scale * (dist / pinch.dist), options.width, options.height));
-    }
-    return;
-  }
-  if (pan) {
-    if (e.pointerId === pan.id) {
-      const s = view.scale;
-      setView({ scale: s, x: view.x - (px[0] - pan.last[0]) / s, y: view.y - (px[1] - pan.last[1]) / s });
-      pan.last = px;
-    }
-    return;
-  }
-  if (gestureLock) return;
-  if (e.pointerType === "mouse") hoverPx = px;
-  onEditPointerMove(e);
-});
-
-function onPointerEnd(e: PointerEvent): void {
-  pointers.delete(e.pointerId);
-  if (pinch || gestureLock) {
-    if (pointers.size < 2) pinch = null;
-    if (pointers.size === 0) gestureLock = false;
-    return;
-  }
-  if (pan) {
-    if (e.pointerId === pan.id) {
-      pan = null;
-      mapWrap.classList.remove("panning");
-    }
-    return;
-  }
-  endPointer(e);
-}
-canvas.addEventListener("pointerup", onPointerEnd);
-canvas.addEventListener("pointercancel", onPointerEnd);
-canvas.addEventListener("pointerenter", () => { hovering = true; });
-canvas.addEventListener("pointerleave", () => {
-  hovering = false;
-  hoverPx = undefined;
-  if (!painting && draggingCity < 0 && routeStart < 0 && !draggingPoint && !draggingSpan) clearOverlay();
-});
-canvas.addEventListener("contextmenu", (e) => e.preventDefault()); // 오른쪽 버튼 끌기로 이동
-canvas.addEventListener("wheel", (e) => {
-  if (!world) return;
-  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
-  const factor = Math.exp(-e.deltaY * unit * 0.0015);
-  // 더 줄이거나 키울 수 없으면 페이지 스크롤을 막지 않는다.
-  if ((factor < 1 && view.scale <= MIN_SCALE + 1e-6) || (factor > 1 && view.scale >= MAX_SCALE - 1e-6)) return;
-  e.preventDefault();
-  hoverPx = canvasPx(e);
-  setView(zoomAt(view, factor, hoverPx[0], hoverPx[1], options.width, options.height));
-}, { passive: false });
-$("zoomIn").addEventListener("click", () => zoomBy(1.5));
-$("zoomOut").addEventListener("click", () => zoomBy(1 / 1.5));
-$("zoomReset").addEventListener("click", () => setView(identityView()));
 
 function restore(s: Snapshot): void {
   elevation = s.elevation;
@@ -1445,7 +1037,7 @@ document.querySelectorAll<HTMLInputElement>("[data-layer]").forEach((box) => {
   box.checked = layers[key];
   box.addEventListener("change", () => {
     layers = { ...layers, [key]: box.checked };
-    draw();
+    viewport.draw();
   });
 });
 
@@ -1526,21 +1118,11 @@ $("renameState").addEventListener("click", () => {
   applyCivEdit((c) => renameState(c, id, next, options.nameStyle), "국가 이름을 바꿨습니다.");
 });
 
+// 편집 단축키 (확대·이동 키는 Viewport가 먼저 처리한다)
 document.addEventListener("keydown", (e) => {
   const target = e.target as HTMLElement;
   if (target.tagName === "INPUT" && (target as HTMLInputElement).type === "text") return;
   const mod = e.ctrlKey || e.metaKey;
-  if (e.key === " " && editMode && hovering) {
-    e.preventDefault(); // 페이지 스크롤·포커스된 버튼 누름을 막는다
-    spaceHeld = true;
-    mapWrap.classList.add("pan-ready");
-    return;
-  }
-  if (!mod && !e.altKey && target.tagName !== "SELECT") {
-    if (e.key === "+" || e.key === "=") { e.preventDefault(); zoomBy(1.5); return; }
-    if (e.key === "-" || e.key === "_") { e.preventDefault(); zoomBy(1 / 1.5); return; }
-    if (e.key === "0") { e.preventDefault(); setView(identityView()); return; }
-  }
   if (mod && e.key.toLowerCase() === "z") {
     e.preventDefault();
     if (e.shiftKey) redo(); else undo();
@@ -1552,21 +1134,10 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-document.addEventListener("keyup", (e) => {
-  if (e.key !== " " || !spaceHeld) return;
-  e.preventDefault();
-  spaceHeld = false;
-  mapWrap.classList.remove("pan-ready");
-});
-window.addEventListener("blur", () => {
-  spaceHeld = false;
-  mapWrap.classList.remove("pan-ready");
-});
-
 $("exportPng").addEventListener("click", () => {
   if (!world) return;
   // 확대해서 보고 있어도 지도 전체를 원래 크기로 저장한다.
-  exportCanvas().toBlob((blob) => blob && download(`${safeFileName(options.seed)}.png`, blob), "image/png");
+  viewport.exportCanvas().toBlob((blob) => blob && download(`${safeFileName(options.seed)}.png`, blob), "image/png");
 });
 $("exportJson").addEventListener("click", () => {
   if (!world) return;
@@ -1592,31 +1163,18 @@ $("copyLink").addEventListener("click", async () => {
 });
 
 // ── 시작 ─────────────────────────────────────────────────────────────
-const initial: WorldOptions = { ...DEFAULT_OPTIONS, ...readHash() };
+const initial: WorldOptions = { ...DEFAULT_OPTIONS, ...parseHash(location.hash) };
 fillForm(initial);
 setTool(brush.tool);
 setEditTarget("terrain");
 syncBrush();
 setEditMode(false);
-syncZoomUi();
-// 창 크기·화면 배율(브라우저 확대, 다른 모니터로 이동)이 바뀌면 해상도를 다시 맞춘다.
-let resizeQueued = false;
-const onResize = (): void => {
-  if (resizeQueued) return;
-  resizeQueued = true;
-  requestAnimationFrame(() => {
-    resizeQueued = false;
-    if (world && syncBacking()) { draw(); clearOverlay(); }
-  });
-};
-new ResizeObserver(onResize).observe(canvas);
-window.addEventListener("resize", onResize);
 // 지도 라벨이 대체 글꼴로 그려지지 않도록 웹 글꼴을 먼저 기다린다 (실패해도 진행).
 Promise.race([
   document.fonts.load('600 16px "Noto Serif KR"'),
   new Promise((r) => setTimeout(r, 2500)),
 ]).catch(() => undefined).finally(() => {
-  const saved = loadSavedEdits(initial);
+  const saved = loadStartupEdits(initial);
   generate(initial, saved ? { restoreFrom: saved.elevation, names: saved.names, civ: saved.civ, infra: saved.infra } : {});
   if (saved && hasEdits()) setStatus("이 브라우저에 저장된 편집 내용을 불러왔습니다. '지형 초기화'·'자동 배치로'로 되돌릴 수 있습니다.");
 });

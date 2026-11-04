@@ -4,13 +4,30 @@ import { collectErrors, exportJson, mapToScreen, openApp } from "./helpers.ts";
 
 test("첫 화면에서 지도를 만들고, 캔버스 해상도가 화면 배율을 따른다", async ({ page }) => {
   const errors = collectErrors(page);
+  // 실패했을 때 원인을 알 수 있게 캔버스 해상도가 바뀔 때마다 그때의 표시 폭을 기록한다.
+  await page.addInitScript(() => {
+    const log: string[] = [];
+    (window as unknown as { __backingLog: string[] }).__backingLog = log;
+    document.addEventListener("DOMContentLoaded", () => {
+      const c = document.getElementById("map") as HTMLCanvasElement;
+      new MutationObserver(() => log.push(`${c.width}x${c.height} @css ${c.getBoundingClientRect().width}`))
+        .observe(c, { attributes: true, attributeFilter: ["width", "height"] });
+    });
+  });
   await openApp(page);
-  const info = await page.evaluate(() => {
+  const read = () => page.evaluate(() => {
     const c = document.getElementById("map") as HTMLCanvasElement;
     const o = document.getElementById("overlay") as HTMLCanvasElement;
-    return { css: c.getBoundingClientRect().width, w: c.width, h: c.height, ow: o.width, oh: o.height, dpr: devicePixelRatio };
+    return {
+      css: c.getBoundingClientRect().width, w: c.width, h: c.height, ow: o.width, oh: o.height, dpr: devicePixelRatio,
+      log: (window as unknown as { __backingLog: string[] }).__backingLog,
+    };
   });
-  expect(info.w).toBe(Math.round(info.css * info.dpr));
+  let info = await read();
+  await expect.poll(async () => {
+    info = await read();
+    return info.w === Math.round(info.css * info.dpr);
+  }, { message: `캔버스 해상도가 표시 폭 × 배율과 다름: ${JSON.stringify(await read())}` }).toBe(true);
   expect(info.h).toBe(Math.round((info.w * 800) / 1200));
   expect([info.ow, info.oh]).toEqual([info.w, info.h]);
   await expect(page.locator("#legend span").first()).toBeVisible();
@@ -117,4 +134,16 @@ test("PNG 저장은 보기 배율과 상관없이 원래 크기(1200×800)", asy
   const [dl] = await Promise.all([page.waitForEvent("download"), page.click("#exportPng")]);
   const png = await readFile(await dl.path());
   expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([1200, 800]);
+});
+
+test("URL의 옵션이 범위를 벗어나면 오류를 보여 주고, 고치면 다시 만든다", async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.goto("./#seed=청운&cells=999999");
+  await expect(page.locator("#status")).toHaveClass(/error/);
+  await expect(page.locator("#status")).toContainText("셀 수");
+  await page.locator("#cells").fill("9000");
+  await page.click("button.primary");
+  await expect(page.locator("#status")).not.toHaveClass(/error/);
+  await expect(page.locator("#status")).toHaveText(/^셀 [\d,]+개 · 국가/);
+  expect(errors).toEqual([]);
 });
