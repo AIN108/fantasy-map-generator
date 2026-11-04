@@ -147,3 +147,41 @@ test("URL의 옵션이 범위를 벗어나면 오류를 보여 주고, 고치면
   await expect(page.locator("#status")).toHaveText(/^셀 [\d,]+개 · 국가/);
   expect(errors).toEqual([]);
 });
+
+test("칠하는 동안 미리보기는 Worker가 계산하고, 손을 떼기 전에도 화면이 바뀐다", async ({ page }) => {
+  const errors = collectErrors(page);
+  await openApp(page);
+  await expect.poll(() => page.workers().length).toBe(1);
+  await page.keyboard.press("e");
+  await page.check('input[name="tool"][value="raise"]');
+  const shot = () => page.evaluate(() => (document.getElementById("map") as HTMLCanvasElement).toDataURL());
+  const before = await shot();
+  const [x, y] = await mapToScreen(page, 150, 680);
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  for (let k = 0; k < 20; k++) await page.mouse.move(x + Math.cos(k / 3) * 25, y + Math.sin(k / 3) * 25);
+  await expect.poll(shot).not.toBe(before); // 아직 누르고 있는 상태
+  await page.mouse.up();
+  await expect(page.locator("#undo")).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+test("Worker를 쓸 수 없는 환경에서도 칠하기 미리보기와 편집이 동작한다", async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.addInitScript(() => { Reflect.deleteProperty(window, "Worker"); });
+  await openApp(page);
+  expect(page.workers()).toHaveLength(0);
+  const before = (await exportJson(page)).cells.map((c) => c.elevation);
+  await page.keyboard.press("e");
+  const shot = () => page.evaluate(() => (document.getElementById("map") as HTMLCanvasElement).toDataURL());
+  const img = await shot();
+  const [x, y] = await mapToScreen(page, 150, 680);
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  for (let k = 0; k < 20; k++) await page.mouse.move(x + Math.cos(k / 3) * 25, y + Math.sin(k / 3) * 25);
+  await expect.poll(shot).not.toBe(img);
+  await page.mouse.up();
+  await expect(page.locator("#undo")).toBeEnabled();
+  expect((await exportJson(page)).cells.map((c) => c.elevation)).not.toEqual(before);
+  expect(errors).toEqual([]);
+});

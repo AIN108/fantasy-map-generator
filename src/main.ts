@@ -10,19 +10,21 @@ import {
 } from "./infra.ts";
 import { findCell, type Mesh } from "./mesh.ts";
 import type { NameStyle } from "./names.ts";
+import type { PreviewInput, PreviewOutput } from "./preview.ts";
 import {
   buildRenderCache, DEFAULT_LAYERS, describeCell, drawBridgeSpan, drawTunnelSpan, type Layers, type RenderCache,
 } from "./render.ts";
 import { fillForm, formatHash, formatters, parseHash, RANGE_FIELDS, readForm } from "./ui/options.ts";
 import { loadSavedEdits, saveEdits as saveEdits_, type KeyValueStore } from "./ui/storage.ts";
 import { eul } from "./ui/text.ts";
+import { PreviewClient, type WorkerLike } from "./ui/preview-client.ts";
 import {
   BORDER_HINT, CITY_TOOL_HINTS, INFRA_TOOL_HINTS, type CityTool, type EditTarget, type InfraTool,
 } from "./ui/tool-hints.ts";
 import { Viewport } from "./ui/viewport.ts";
 import {
   applyInfra, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors, parseMapJSON,
-  terrainKey, toJSON, validateOptions, type NameAnchors, type WorldMap, type WorldOptions,
+  natureKey, natureOf, terrainKey, toJSON, validateOptions, type NameAnchors, type Nature, type WorldMap, type WorldOptions,
 } from "./world.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -104,6 +106,22 @@ const viewport = new Viewport(canvas, $<HTMLCanvasElement>("overlay"), {
   },
 });
 
+/** 칠하기 미리보기 계산을 맡을 Worker. 만들 수 없는 환경이면 메인 스레드에서 계산한다. */
+function createPreviewWorker(): WorkerLike | undefined {
+  try {
+    // Vite가 이 형태(new Worker(new URL(...), { type: "module" }))를 보고 Worker를 따로 묶는다.
+    return new Worker(new URL("./preview.worker.ts", import.meta.url), { type: "module" }) as unknown as WorkerLike;
+  } catch {
+    return undefined;
+  }
+}
+
+const previewClient = new PreviewClient(createPreviewWorker(), {
+  result: (output) => showPreview(output),
+  error: (message) => setStatus(message, true),
+  fallback: (natureOnly) => { if (painting) queueSyncPreview(natureOnly); },
+});
+
 function setStatus(text: string, isError = false): void {
   statusEl.textContent = text;
   statusEl.classList.toggle("error", isError);
@@ -167,20 +185,41 @@ function updateEditButtons(): void {
 }
 
 /**
+ * 다시 계산할 때의 입력. 지형을 칠하는 동안 Worker에 보낼 때는 elevation을 복사한다 (보내는 동안에도 계속 칠하므로).
+ */
+function deriveInput(m: Mesh, e: Float64Array, natureOnly: boolean, copy: boolean): PreviewInput {
+  if (civ) ensureCivNames(civ, options.nameStyle, options.seed);
+  // 자동 도로가 다리·터널을 길로 쓰도록 연결을 넘긴다. 호수 여부는 직전 계산 결과를 쓴다
+  // (지형을 바꾼 직후 한 번은 오래된 값일 수 있지만, 다리 양 끝이 호수가 되는 경우는 드물다).
+  const lakes = world && world.mesh === m ? world.hydro.isLake : new Uint8Array(m.count);
+  const links = spanLinks({ mesh: m, elevation: e, biome: [], hydro: { isLake: lakes, isRiver: lakes } }, infra, "road");
+  return {
+    options, elevation: copy ? Float64Array.from(e) : e, natureOnly, prior: nameMemory[options.nameStyle], civ, links, infra,
+    natureKey: natureKey(options, e),
+  };
+}
+
+/**
+ * 마지막으로 계산한 자연(기후·수계·생태·강). 고도가 그대로인 편집(도시·국경·시설·지명 스타일)이나
+ * 칠하기 미리보기가 이미 최종 지형으로 계산해 둔 경우에는 다시 계산하지 않는다.
+ */
+let natureCache: { key: string; nature: Nature } | undefined;
+
+/**
  * 현재 메시·고도(·편집한 문명)로 기후부터 문명까지 다시 계산해 그린다.
  * natureOnly: 지형 브러시로 칠하는 중에는 지형·강·생태만 빠르게 갱신한다.
  */
 function derive(natureOnly = false): void {
   if (!mesh || !elevation) return;
+  // 이 계산이 최신이다: 칠하는 동안 Worker에 맡긴 미리보기가 늦게 와도 버린다.
+  previewClient.cancel();
   try {
     const t0 = performance.now();
-    const prior = nameMemory[options.nameStyle];
-    if (civ) ensureCivNames(civ, options.nameStyle, options.seed);
-    // 자동 도로가 다리·터널을 길로 쓰도록 연결을 넘긴다. 호수 여부는 직전 계산 결과를 쓴다
-    // (지형을 바꾼 직후 한 번은 오래된 값일 수 있지만, 다리 양 끝이 호수가 되는 경우는 드물다).
-    const lakes = world && world.mesh === mesh ? world.hydro.isLake : new Uint8Array(mesh.count);
-    const links = spanLinks({ mesh, elevation, biome: [], hydro: { isLake: lakes, isRiver: lakes } }, infra, "road");
-    const derived = deriveWorld(options, mesh, elevation, natureOnly, prior, civ, links);
+    const input = deriveInput(mesh, elevation, natureOnly, false);
+    const { prior } = input;
+    const reuse = natureCache?.key === input.natureKey ? natureCache.nature : undefined;
+    const derived = deriveWorld(options, mesh, elevation, natureOnly, prior, input.civ, input.links, reuse);
+    natureCache = { key: input.natureKey, nature: natureOf(derived) };
     if (!natureOnly) {
       nameMemory[options.nameStyle] = mergeAnchors(extractAnchors(derived), prior);
       autoRoads = derived.roads;
@@ -261,6 +300,7 @@ function generate(
       infra = opts.infra ?? emptyInfra();
     }
     derive();
+    previewClient.warm(options); // Worker가 메시를 미리 만들어 두게 한다
     saveEdits();
     updateEditButtons();
   } catch (err) {
@@ -658,13 +698,31 @@ let draggingPoint: { kind: PointKind; index: number } | null = null;
 let draggingSpan: { kind: "bridge" | "tunnel"; index: number; part: SpanPart; grabX: number; grabY: number } | null = null;
 let borderBefore: Snapshot | undefined;
 
+/**
+ * 칠하는 동안의 미리보기. Worker가 있으면 맡기고(메인 스레드는 그리기만), 없으면 프레임당 한 번 직접 계산한다.
+ */
 function queuePreview(natureOnly: boolean): void {
+  // 입력은 Worker가 받을 수 있게 됐을 때 그 순간의 지형으로 만든다 (계산 중에 들어온 붓질까지 반영).
+  if (mesh && elevation && previewClient.request(natureOnly, () => deriveInput(mesh!, elevation!, natureOnly, true))) return;
+  queueSyncPreview(natureOnly);
+}
+
+function queueSyncPreview(natureOnly: boolean): void {
   if (previewQueued) return;
   previewQueued = true;
   requestAnimationFrame(() => {
     previewQueued = false;
     derive(natureOnly);
   });
+}
+
+/** Worker가 계산한 미리보기를 그린다. 메시는 보내지 않으므로 메인의 것을 붙인다. */
+function showPreview(output: PreviewOutput): void {
+  if (!mesh || !painting) return;
+  world = { ...output.world, mesh };
+  cache = output.cache;
+  natureCache = { key: output.natureKey, nature: natureOf(world) };
+  viewport.draw(true);
 }
 
 /** 빠르게 끌어도 끊기지 않게, 이전 점과 현재 점 사이를 반지름의 1/3 간격으로 메워 찍는다. */

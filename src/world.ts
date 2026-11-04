@@ -118,16 +118,17 @@ export function generateWorld(input: Partial<WorldOptions> = {}): WorldMap {
  * civ를 주면 도시·국가·국경을 자동 배치하지 않고 사용자가 편집한 값을 그대로 쓴다.
  * links(다리·터널 연결)를 주면 자동 도로가 그 연결을 길로 쓴다 (다리로 이은 섬끼리도 도로가 생긴다).
  */
-export function deriveWorld(
-  options: WorldOptions, mesh: Mesh, elevation: Float64Array, natureOnly = false, prior?: NameAnchors,
-  civ?: CivState, links?: LinkGraph,
-): WorldMap {
-  validateOptions(options);
-  if (elevation.length !== mesh.count) {
-    throw new RangeError(`고도 배열 길이(${elevation.length})가 셀 수(${mesh.count})와 다릅니다.`);
-  }
-  const { seed } = options;
+/** 고도에서 정해지는 자연 (기후·수계·생태·강). 문명과 달리 시드·기온 보정·고도만으로 정해진다. */
+export interface Nature {
+  temperature: Float64Array;
+  moisture: Float64Array;
+  hydro: Hydrology;
+  biome: Biome[];
+  rivers: River[];
+}
 
+export function computeNature(options: WorldOptions, mesh: Mesh, elevation: Float64Array): Nature {
+  const { seed } = options;
   // 단계마다 별도 난수열을 써서, 예를 들어 지명 스타일만 바꿔도 지형은 그대로 유지되게 한다.
   const temperature = computeTemperature(mesh, elevation, subRng(seed, "temperature"), options.temperatureShift);
   const moisture = computeMoisture(mesh, elevation, subRng(seed, "moisture"));
@@ -148,6 +149,41 @@ export function deriveWorld(
     cells,
     flux: hydro.flux[cells[cells.length - 2] ?? cells[0]],
   }));
+  return { temperature, moisture, hydro, biome, rivers };
+}
+
+/**
+ * 자연 계산 결과를 다시 써도 되는지 가리는 키: 메시·시드·기온 보정과 고도 값 자체.
+ * 고도는 값의 해시로 비교한다 (편집 경로마다 "바뀜" 표시를 따로 관리하지 않아도 되게).
+ */
+export function natureKey(options: WorldOptions, elevation: Float64Array): string {
+  const words = new Uint32Array(elevation.buffer, elevation.byteOffset, elevation.length * 2);
+  // FNV-1a 두 개 (서로 다른 시작값): 9,000셀 기준 0.1ms 안팎
+  let a = 0x811c9dc5, b = 0x01000193 ^ words.length;
+  for (let i = 0; i < words.length; i++) {
+    a = Math.imul(a ^ words[i], 0x01000193);
+    b = Math.imul(b ^ words[i] ^ (i << 7), 0x01000193);
+  }
+  return `${meshKey(options)}|${options.temperatureShift}|${(a >>> 0).toString(36)}${(b >>> 0).toString(36)}`;
+}
+
+export const natureOf = (w: WorldMap): Nature => ({
+  temperature: w.temperature, moisture: w.moisture, hydro: w.hydro, biome: w.biome, rivers: w.rivers,
+});
+
+export function deriveWorld(
+  options: WorldOptions, mesh: Mesh, elevation: Float64Array, natureOnly = false, prior?: NameAnchors,
+  civ?: CivState, links?: LinkGraph, nature?: Nature,
+): WorldMap {
+  validateOptions(options);
+  if (elevation.length !== mesh.count) {
+    throw new RangeError(`고도 배열 길이(${elevation.length})가 셀 수(${mesh.count})와 다릅니다.`);
+  }
+  const { seed } = options;
+  // 같은 고도로 이미 계산한 자연이 있으면 그대로 쓴다. 강 객체에는 문명 단계에서 이름이 붙으므로 새로 만든다.
+  const n = nature ?? computeNature(options, mesh, elevation);
+  const { temperature, moisture, hydro, biome } = n;
+  const rivers: River[] = nature ? nature.rivers.map((r) => ({ cells: r.cells, flux: r.flux })) : n.rivers;
 
   if (natureOnly) {
     return {
