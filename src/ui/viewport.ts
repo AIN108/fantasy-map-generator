@@ -59,6 +59,8 @@ export class Viewport {
   private height = 800;
   private mapSize = "";
   private currentView: View = identityView();
+  /** 검색으로 찾은 위치. 지도 데이터·PNG에는 넣지 않는 화면 표시. */
+  private focusPoint: [number, number] | undefined;
 
   /** 지명을 뺀 전체 지도 사본 (확대·이동 중 늘려 쓰는 바탕, 기기 픽셀 해상도) */
   private readonly baseCanvas = document.createElement("canvas");
@@ -241,7 +243,20 @@ export class Viewport {
     this.setView(zoomAt(this.currentView, factor, this.width / 2, this.height / 2, this.width, this.height));
   }
 
-  resetView(): void { this.setView(identityView()); }
+  resetView(): void { this.clearFocus(); this.setView(identityView()); }
+
+  focusAt(x: number, y: number, scale = 3): void {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    this.focusPoint = [x, y];
+    this.setView(anchoredView(x, y, this.width / 2, this.height / 2, Math.max(this.view.scale, scale), this.width, this.height));
+    this.clearOverlay();
+  }
+
+  clearFocus(): void {
+    if (!this.focusPoint) return;
+    this.focusPoint = undefined;
+    this.clearOverlay();
+  }
 
   private syncZoomUi(): void {
     const s = this.currentView.scale;
@@ -279,6 +294,25 @@ export class Viewport {
     o.clearRect(0, 0, this.overlay.width, this.overlay.height);
     const k = v.scale * this.pixelRatio();
     o.setTransform(k, 0, 0, k, -v.x * k, -v.y * k);
+    if (this.focusPoint) {
+      const [x, y] = this.focusPoint;
+      const unit = this.width / Math.max(1, this.canvas.getBoundingClientRect().width) / v.scale;
+      o.save();
+      o.setLineDash([]);
+      o.beginPath();
+      o.arc(x, y, 12 * unit, 0, Math.PI * 2);
+      o.lineWidth = 5 * unit;
+      o.strokeStyle = "#fff";
+      o.stroke();
+      o.lineWidth = 2.5 * unit;
+      o.strokeStyle = "#c64e26";
+      o.stroke();
+      o.beginPath();
+      o.arc(x, y, 3 * unit, 0, Math.PI * 2);
+      o.fillStyle = "#c64e26";
+      o.fill();
+      o.restore();
+    }
     return o;
   }
 
@@ -309,6 +343,7 @@ export class Viewport {
   }
 
   private onPointerDown(e: PointerEvent): void {
+    this.clearFocus();
     this.pointers.set(e.pointerId, this.canvasPx(e));
     if (this.pointers.size === 2) {
       e.preventDefault();

@@ -29,6 +29,8 @@ import {
   type ResourceTool,
 } from "./ui/tool-hints.ts";
 import { Viewport } from "./ui/viewport.ts";
+import { worldPlaces, PLACE_CATEGORIES, type WorldPlace } from "./places.ts";
+import { createPlaceSearch } from "./ui/place-search.ts";
 import {
   applyInfra, applyResources, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors, parseMapJSON,
   natureKey, natureOf, terrainKey, toJSON, validateOptions, type NameAnchors, type Nature, type WorldMap, type WorldOptions,
@@ -117,6 +119,14 @@ const viewport = new Viewport(canvas, $<HTMLCanvasElement>("overlay"), {
   pointerLeave: () => {
     if (!painting && draggingCity < 0 && routeStart < 0 && !draggingPoint && !draggingSpan) viewport.clearOverlay();
   },
+});
+
+const placeSearch = createPlaceSearch<WorldPlace>(PLACE_CATEGORIES, (place) => {
+  viewport.focusAt(place.x, place.y, place.category === "state" ? 2 : 3);
+  showCellInfo(place.x, place.y);
+  setStatus(`${place.name} · ${place.detail} 위치로 이동했습니다.`);
+  canvas.scrollIntoView({ block: "center" });
+  canvas.focus({ preventScroll: true });
 });
 
 /** 칠하기 미리보기 계산을 맡을 Worker. 만들 수 없는 환경이면 메인 스레드에서 계산한다. */
@@ -242,9 +252,11 @@ function derive(natureOnly = false): void {
     cache = buildRenderCache(world);
     viewport.setMapSize(options.width, options.height);
     viewport.syncBacking();
+    viewport.clearFocus();
     viewport.draw(painting); // 칠하는 중이면 빠르게, 손을 뗀 뒤(commit)에는 선명하게
     if (natureOnly) return;
     renderLegend(world);
+    placeSearch.setPlaces(worldPlaces(world));
     renderResourceLegend(resourceLegendEl, world.resources, layers.resources);
     renderPaintStates(world);
     history.replaceState(null, "", formatHash(options));
@@ -970,6 +982,11 @@ function onEditPointerMove(e: PointerEvent): void {
     return;
   }
   if (draggingCity >= 0 || !world) return;
+  showCellInfo(x, y);
+}
+
+function showCellInfo(x: number, y: number): void {
+  if (!world) return;
   const info = describeCell(world, findCell(world.mesh, x, y));
   infoEl.replaceChildren(
     ...Object.entries(info).flatMap(([k, v]) => {
