@@ -106,6 +106,19 @@ button.primary { width: 100%; background: var(--accent); color: var(--accent-tex
 .status.error { color: #c0392b; }
 
 .stage { min-width: 0; }
+.place-search { margin-bottom: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.place-search h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; color: var(--text); font-size: 14px; font-weight: 700; }
+.place-controls { display: grid; grid-template-columns: minmax(0, 1fr) 110px auto; gap: 6px; }
+.place-controls input, .place-controls select { min-width: 0; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.place-search :focus-visible, #map:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.place-search p { margin: 7px 0 0; color: var(--muted); font-size: 12px; }
+.place-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 4px; max-height: 220px; overflow-y: auto; overscroll-behavior: contain; margin: 8px 0 0; padding: 3px; list-style: none; }
+.place-results[hidden] { display: none; }
+.place-results li { min-width: 0; }
+.place-results button { display: flex; flex-direction: column; gap: 2px; width: 100%; height: 100%; text-align: left; overflow-wrap: anywhere; }
+.place-results strong { font-size: 13px; }
+.place-results small { color: var(--muted); font-size: 11.5px; }
+@media (max-width: 400px) { .place-controls { grid-template-columns: minmax(0, 1fr) 96px; } .place-controls button { grid-column: 1 / -1; } }
 /* 지도 캔버스 (범례 아이콘 같은 작은 캔버스에는 적용하지 않는다) */
 #map, #overlay {
   display: block;

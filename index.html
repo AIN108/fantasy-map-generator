@@ -225,8 +225,18 @@
       </aside>
 
       <main class="stage">
+        <section class="place-search" aria-labelledby="placeSearchTitle">
+          <h2 id="placeSearchTitle">장소 찾기 <kbd>/</kbd></h2>
+          <div class="place-controls" role="search" aria-label="지도 장소 검색">
+            <input type="search" id="placeQuery" placeholder="국가·도시·강·시설 이름" aria-label="장소 검색" aria-controls="placeResults" aria-describedby="placeCount" autocomplete="off" maxlength="100" />
+            <select id="placeCategory" aria-label="장소 종류"><option value="all">모든 종류</option></select>
+            <button type="button" id="placeClear" disabled>초기화</button>
+          </div>
+          <p id="placeCount" role="status" aria-live="polite"></p>
+          <ul id="placeResults" class="place-results" aria-label="장소 검색 결과" hidden></ul>
+        </section>
         <div class="map-wrap">
-          <canvas id="map" width="1200" height="800" aria-label="생성된 판타지 지도"></canvas>
+          <canvas id="map" width="1200" height="800" tabindex="0" aria-label="생성된 판타지 지도"></canvas>
           <canvas id="overlay" width="1200" height="800" aria-hidden="true"></canvas>
           <div class="zoom-controls" role="group" aria-label="확대·축소">
             <button type="button" id="zoomIn" title="확대 (+ 또는 휠)" aria-label="확대">+</button>
