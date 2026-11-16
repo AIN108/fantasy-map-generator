@@ -11,8 +11,8 @@ permissions:
 
 jobs:
   test-build:
-    # Playwright 1.56.1이 지원하는 환경에 고정 (ubuntu-latest의 26.04에서는 브라우저 설치 실패).
-    runs-on: ubuntu-24.04
+    # Playwright 1.61부터 Ubuntu 26.04를 지원하므로 고정을 풀었다 (@playwright/test 1.65.1).
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
