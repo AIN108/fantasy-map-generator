@@ -30,12 +30,23 @@ export interface ExportedMap {
   };
 }
 
+/**
+ * 브라우저가 내는 무해한 경고: 한 렌더링 단계 안에서 관찰 대상의 크기가 다시 바뀌어 ResizeObserver 알림이 다음 단계로 넘어갔다는 뜻이다.
+ * 앱 코드의 예외가 아니고 동작에 영향이 없다 (명세상 window error 이벤트로 알린다). WebKit에서 글꼴 로드와 첫 지도 배치가 겹칠 때
+ * 드물게 나서, 이 문구와 정확히 같을 때만 오류에서 빼고 테스트 출력에 남긴다 (style.css의 #map aspect-ratio로 원인을 줄였다).
+ */
+const BENIGN_RESIZE_OBSERVER = "ResizeObserver loop completed with undelivered notifications.";
+
 /** 페이지에서 난 오류를 모은다. 테스트 끝에 비어 있는지 확인한다. */
 export function collectErrors(page: Page): string[] {
   const errors: string[] = [];
-  page.on("pageerror", (e) => errors.push(e.message));
+  const add = (text: string): void => {
+    if (text === BENIGN_RESIZE_OBSERVER) { console.warn(`[무해한 브라우저 경고, 오류에서 제외] ${text}`); return; }
+    errors.push(text);
+  };
+  page.on("pageerror", (e) => add(e.message));
   page.on("console", (m) => {
-    if (m.type() === "error" && !m.text().includes("404")) errors.push(m.text());
+    if (m.type() === "error" && !m.text().includes("404")) add(m.text());
   });
   return errors;
 }
