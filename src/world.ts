@@ -554,6 +554,21 @@ export function applyInfra(world: WorldMap, infra: Infra): WorldMap {
   return { ...world, ...v };
 }
 
+/** 저장 파일·공유 링크의 options를 읽는다. 없는 값은 기본값, 범위를 벗어나면 RangeError. */
+export function optionsFromJSON(data: unknown): WorldOptions {
+  const raw = (typeof data === "object" && data !== null ? data : {}) as Record<string, unknown>;
+  const options: WorldOptions = { ...DEFAULT_OPTIONS };
+  if (typeof raw.seed === "string") options.seed = raw.seed.slice(0, 40);
+  for (const key of ["width", "height", "cells", "landRatio", "states", "citiesPerState", "temperatureShift"] as const) {
+    const v = raw[key];
+    if (typeof v === "number" && Number.isFinite(v)) options[key] = v;
+  }
+  if (raw.shape === "continent" || raw.shape === "archipelago") options.shape = raw.shape;
+  if (raw.nameStyle === "korean" || raw.nameStyle === "western") options.nameStyle = raw.nameStyle;
+  validateOptions(options);
+  return options;
+}
+
 /**
  * toJSON으로 저장한 지도를 다시 읽어 옵션과 (편집된) 고도를 돌려준다.
  * 외부 파일이므로 형식·범위를 검증하고, 메시를 다시 만들어 셀 수가 맞는지 확인한다.
@@ -571,16 +586,7 @@ export function parseMapJSON(
   if (typeof obj.options !== "object" || obj.options === null) fail("options가 없습니다.");
   if (!Array.isArray(obj.cells)) fail("cells가 없습니다.");
 
-  const raw = obj.options as Record<string, unknown>;
-  const options: WorldOptions = { ...DEFAULT_OPTIONS };
-  if (typeof raw.seed === "string") options.seed = raw.seed.slice(0, 40);
-  for (const key of ["width", "height", "cells", "landRatio", "states", "citiesPerState", "temperatureShift"] as const) {
-    const v = raw[key];
-    if (typeof v === "number" && Number.isFinite(v)) options[key] = v;
-  }
-  if (raw.shape === "continent" || raw.shape === "archipelago") options.shape = raw.shape;
-  if (raw.nameStyle === "korean" || raw.nameStyle === "western") options.nameStyle = raw.nameStyle;
-  validateOptions(options);
+  const options = optionsFromJSON(obj.options);
 
   const mesh = createMesh(options);
   const cells = obj.cells as unknown[];
