@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { DOUBLE_TAP_MS, isTap, isTwoFingerTap, TAP_MAX_MS, TAP_SLOP_PX, TapCounter } from "../src/ui/gestures.ts";
+import { DOUBLE_TAP_MS, isTap, isTwoFingerTap, stepValue, TAP_MAX_MS, TAP_SLOP_PX, TapCounter, wheelDirection } from "../src/ui/gestures.ts";
 
 describe("누르기 판정", () => {
   const down = { x: 100, y: 100, t: 1000 };
@@ -27,5 +27,21 @@ describe("누르기 판정", () => {
     assert.equal(isTwoFingerTap(s, { x: 300, y: 200, d: 200, t: 200 }), false, "벌려서 확대");
     assert.equal(isTwoFingerTap(s, { x: 360, y: 200, d: 120, t: 200 }), false, "두 손가락으로 끌기");
     assert.equal(isTwoFingerTap(s, { x: 300, y: 200, d: 120, t: TAP_MAX_MS + 1 }), false, "오래 누름");
+  });
+});
+
+describe("Shift+휠 브러시 크기", () => {
+  test("한 칸씩 바꾸고 범위·칸에 맞춘다", () => {
+    assert.equal(stepValue(45, 1, 10, 160, 5), 50);
+    assert.equal(stepValue(45, -1, 10, 160, 5), 40);
+    assert.equal(stepValue(158, 1, 10, 160, 5), 160);
+    assert.equal(stepValue(10, -1, 10, 160, 5), 10);
+    assert.equal(stepValue(47, 1, 10, 160, 5), 50, "칸에 맞춘다");
+    assert.equal(stepValue(45, 3, 10, 160, 5), 50, "세기와 상관없이 한 칸");
+  });
+  test("휠 방향: 위로 굴리면 키운다, Shift로 deltaX만 와도 같다", () => {
+    assert.equal(wheelDirection({ deltaX: 0, deltaY: -100 }), 1);
+    assert.equal(wheelDirection({ deltaX: 0, deltaY: 40 }), -1);
+    assert.equal(wheelDirection({ deltaX: -100, deltaY: 0 }), 1);
   });
 });

@@ -42,3 +42,12 @@ export function isTwoFingerTap(start: PinchSample, end: PinchSample): boolean {
     && Math.hypot(end.x - start.x, end.y - start.y) <= TAP_SLOP_PX * 2
     && Math.abs(end.d - start.d) <= TAP_SLOP_PX * 2;
 }
+
+/** 범위 입력 값을 한 칸(step) 올리거나(dir > 0) 내린다. 범위를 넘지 않고 칸에 맞춘다. */
+export function stepValue(value: number, dir: number, min: number, max: number, step: number): number {
+  const next = Math.round((value + Math.sign(dir) * step - min) / step) * step + min;
+  return Math.min(max, Math.max(min, next));
+}
+
+/** 휠 한 번이 키우는 쪽인가 (위로 굴리면 +1). Shift를 누르면 일부 환경은 deltaX로 보낸다. */
+export const wheelDirection = (e: { deltaX: number; deltaY: number }): number => -Math.sign(e.deltaY || e.deltaX);
