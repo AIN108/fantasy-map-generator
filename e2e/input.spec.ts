@@ -1,5 +1,13 @@
 import { test, expect, devices } from "@playwright/test";
 import { collectErrors, mapToScreen, openApp } from "./helpers.ts";
+import type { Page } from "@playwright/test";
+
+/** 화면 (x, y)에 마우스를 올렸을 때의 셀 정보 (확대·이동을 반영한 실제 셀) */
+async function infoAt(page: Page, x: number, y: number): Promise<string> {
+  await page.mouse.move(x + 3, y + 3);
+  await page.mouse.move(x, y);
+  return page.locator("#cellInfo").innerText();
+}
 
 test.describe("터치", () => {
   test("지도를 누르면 셀 정보가 나오고, 두 번 누르면 그 자리가 2배로 확대된다", async ({ browser, browserName }) => {
@@ -49,11 +57,10 @@ test.describe("마우스", () => {
     const errors = collectErrors(page);
     await openApp(page);
     const [x, y] = await mapToScreen(page, 300, 200);
+    const before = await infoAt(page, x, y);
     await page.mouse.dblclick(x, y);
     await expect(page.locator("#zoomLevel")).toHaveText("200%");
-    const [x2, y2] = await mapToScreen(page, 300, 200);
-    expect(Math.abs(x2 - x)).toBeLessThan(3);
-    expect(Math.abs(y2 - y)).toBeLessThan(3);
+    expect(await infoAt(page, x, y)).toBe(before); // 커서 아래 셀은 그대로
     await page.keyboard.down("Shift");
     await page.mouse.dblclick(x, y);
     await page.keyboard.up("Shift");
