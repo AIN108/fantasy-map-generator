@@ -95,22 +95,26 @@ test.describe("키보드", () => {
   test("방향키로 확대한 지도를 옮기고, 목록에서는 방향키를 가로채지 않는다", async ({ page }) => {
     const errors = collectErrors(page);
     await openApp(page);
+    const [x, y] = await mapToScreen(page, 600, 400);
     await page.locator("#map").focus();
+    const at100 = await infoAt(page, x, y);
     await page.keyboard.press("ArrowRight"); // 100%에서는 옮길 곳이 없어 아무것도 하지 않는다
+    expect(await infoAt(page, x, y)).toBe(at100);
     await page.keyboard.press("+");
     await page.keyboard.press("+");
-    const before = await mapToScreen(page, 600, 400);
+    const zoomed = await infoAt(page, x, y);
     await page.keyboard.press("ArrowRight");
-    const after = await mapToScreen(page, 600, 400);
-    expect(after[0]).toBeLessThan(before[0] - 10); // 동쪽을 더 보게 되어 같은 점이 왼쪽으로 간다
-    expect(Math.abs(after[1] - before[1])).toBeLessThan(1);
-    await page.keyboard.press("Shift+ArrowDown");
-    expect((await mapToScreen(page, 600, 400))[1]).toBeLessThan(after[1] - 10);
-    // 목록(select)에 포커스가 있으면 지도는 그대로
-    await page.locator("#nameStyle").focus();
-    const fixed = await mapToScreen(page, 600, 400);
+    const moved = await infoAt(page, x, y);
+    expect(moved).not.toBe(zoomed); // 같은 화면 자리에 다른 셀
     await page.keyboard.press("ArrowLeft");
-    expect(await mapToScreen(page, 600, 400)).toEqual(fixed);
+    expect(await infoAt(page, x, y)).toBe(zoomed); // 되돌아오면 같은 셀
+    await page.keyboard.press("Shift+ArrowDown");
+    expect(await infoAt(page, x, y)).not.toBe(zoomed);
+    // 목록(select)에 포커스가 있으면 지도는 그대로 (목록이 방향키를 쓴다)
+    const fixed = await infoAt(page, x, y);
+    await page.locator("#shape").focus();
+    await page.keyboard.press("ArrowLeft");
+    expect(await infoAt(page, x, y)).toBe(fixed);
     expect(errors).toEqual([]);
   });
 
