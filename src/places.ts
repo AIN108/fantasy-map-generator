@@ -1,4 +1,5 @@
 import { FACILITY_INFO } from "./infra.ts";
+import { RESOURCE_CATEGORY_KO, RESOURCE_INFO } from "./resources.ts";
 import type { SearchPlace } from "./search.ts";
 import type { WorldMap } from "./world.ts";
 
@@ -6,6 +7,7 @@ export const PLACE_CATEGORIES = [
   { value: "state", label: "국가" }, { value: "city", label: "도시" },
   { value: "river", label: "강" }, { value: "peak", label: "봉우리" },
   { value: "port", label: "항구" }, { value: "facility", label: "시설물" },
+  { value: "resource", label: "천연자원" },
 ] as const;
 
 export interface WorldPlace extends SearchPlace { cell: number; x: number; y: number }
@@ -30,5 +32,11 @@ export function worldPlaces(world: WorldMap): WorldPlace[] {
   for (const p of world.peaks) add("peak", p.cell, p.cell, p.name, `봉우리 · ${owner(p.cell)}`);
   for (const p of world.ports) add("port", p.cell, p.cell, p.name || "이름 없는 항구", `항구 · ${owner(p.cell)}`);
   world.facilities.forEach((f, i) => add("facility", i, f.cell, f.name || FACILITY_INFO[f.kind].ko, `시설물 · ${FACILITY_INFO[f.kind].ko} · ${owner(f.cell)}`));
+  // 천연자원: 이름(철광·석유…)과 분류(전략·사치·기본)로 찾는다. 전략 자원은 매장량을 함께 보여 준다.
+  world.resources.forEach((r, i) => {
+    const info = RESOURCE_INFO[r.kind];
+    add("resource", i, r.cell, info.ko,
+      `${RESOURCE_CATEGORY_KO[info.category]}${r.amount !== undefined ? ` · 매장량 ${r.amount}` : ""} · ${owner(r.cell)}`);
+  });
   return out;
 }

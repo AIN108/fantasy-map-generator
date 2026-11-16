@@ -122,6 +122,13 @@ const viewport = new Viewport(canvas, $<HTMLCanvasElement>("overlay"), {
 });
 
 const placeSearch = createPlaceSearch<WorldPlace>(PLACE_CATEGORIES, (place) => {
+  // 자원 레이어를 꺼 둔 상태에서 자원을 골라도 위치가 보이게 켠다.
+  if (place.category === "resource" && !layers.resources) {
+    layers = { ...layers, resources: true };
+    const toggle = document.querySelector<HTMLInputElement>('input[data-layer="resources"]');
+    if (toggle) toggle.checked = true;
+    if (world) renderResourceLegend(resourceLegendEl, world.resources, true);
+  }
   viewport.focusAt(place.x, place.y, place.category === "state" ? 2 : 3);
   showCellInfo(place.x, place.y);
   setStatus(`${place.name} · ${place.detail} 위치로 이동했습니다.`);
