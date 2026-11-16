@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { snapshotCiv } from "../src/civedit.ts";
 import { emptyInfra } from "../src/infra.ts";
-import { formatHash, hashTarget, parseHash } from "../src/ui/options.ts";
+import { formatHash, parseHash } from "../src/ui/options.ts";
 import { loadSavedEdits, saveEdits, STORAGE_KEY, type KeyValueStore } from "../src/ui/storage.ts";
 import { eul } from "../src/ui/text.ts";
 import { createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, terrainKey, type WorldOptions } from "../src/world.ts";
+import { hashTarget } from "../src/ui/options.ts";
 
 describe("목적격 조사", () => {
   test("받침 있으면 '을', 없으면 '를'", () => {
