@@ -19,8 +19,7 @@ import {
   buildRenderCache, DEFAULT_LAYERS, describeCell, drawBridgeSpan, drawTunnelSpan, type Layers, type RenderCache,
 } from "./render.ts";
 import { fillForm, formatHash, formatters, hashTarget, parseHash, RANGE_FIELDS, readForm } from "./ui/options.ts";
-import { loadSavedEdits, saveEdits as saveEdits_, STORAGE_KEY, type KeyValueStore } from "./ui/storage.ts";
-import { canShare, decodeShare, encodeShare, MAX_SHARE_CHARS, type SharedMap } from "./share.ts";
+import { loadSavedEdits, saveEdits as saveEdits_, type KeyValueStore } from "./ui/storage.ts";
 import { isTypingTarget } from "./ui/dom.ts";
 import { renderResourceLegend } from "./ui/resource-legend.ts";
 import { eul } from "./ui/text.ts";
@@ -36,6 +35,8 @@ import {
   applyInfra, applyResources, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors, parseMapJSON,
   natureKey, natureOf, terrainKey, toJSON, validateOptions, type NameAnchors, type Nature, type WorldMap, type WorldOptions,
 } from "./world.ts";
+import { canShare, decodeShare, encodeShare, MAX_SHARE_CHARS, type SharedMap } from "./share.ts";
+import { STORAGE_KEY } from "./ui/storage.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
