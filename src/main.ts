@@ -24,10 +24,7 @@ import { editShortcut, isTypingTarget } from "./ui/dom.ts";
 import { renderResourceLegend } from "./ui/resource-legend.ts";
 import { eul } from "./ui/text.ts";
 import { PreviewClient, type WorkerLike } from "./ui/preview-client.ts";
-import {
-  BORDER_HINT, CITY_TOOL_HINTS, INFRA_TOOL_HINTS, RESOURCE_TOOL_HINTS, type CityTool, type EditTarget, type InfraTool,
-  type ResourceTool,
-} from "./ui/tool-hints.ts";
+import { toolHintText, type CityTool, type EditTarget, type InfraTool, type ResourceTool } from "./ui/tool-hints.ts";
 import { Viewport } from "./ui/viewport.ts";
 import { stepValue } from "./ui/gestures.ts";
 import { worldPlaces, PLACE_CATEGORIES, type WorldPlace } from "./places.ts";
@@ -389,21 +386,9 @@ function setEditMode(on: boolean): void {
 }
 
 function updateHint(): void {
-  const hint = editTarget === "terrain"
-    ? BRUSH_TOOLS[brush.tool].hint
-    : editTarget === "city"
-      ? CITY_TOOL_HINTS[cityTool]
-      : editTarget === "infra"
-        ? INFRA_TOOL_HINTS[infraTool]
-        : editTarget === "resource"
-          ? RESOURCE_TOOL_HINTS[resourceTool]
-          : BORDER_HINT;
-  const civNote = (editTarget === "city" || editTarget === "border") && !civ
-    ? " (처음 편집하면 자동 배치를 멈추고 지금 상태를 고정합니다)"
-    : editTarget === "infra" && (infraTool === "road" || infraTool === "erase") && !infra.roads
-      ? " (도로를 처음 편집하면 자동 도로를 지금 상태로 고정합니다)"
-      : "";
-  $("toolHint").textContent = hint + civNote;
+  $("toolHint").textContent = toolHintText({
+    target: editTarget, brushTool: brush.tool, cityTool, infraTool, resourceTool, civEdited: !!civ, roadsFixed: !!infra.roads,
+  });
 }
 
 function setEditTarget(target: EditTarget): void {

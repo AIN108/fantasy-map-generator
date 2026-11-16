@@ -1,3 +1,4 @@
+import { BRUSH_TOOLS, type BrushTool } from "../editor.ts";
 import { MAX_SPAN_LENGTH } from "../infra.ts";
 
 export type EditTarget = "terrain" | "city" | "border" | "infra" | "resource";
@@ -34,3 +35,34 @@ export const RESOURCE_TOOL_HINTS: Record<ResourceTool, string> = {
 };
 
 export const BORDER_HINT = "고른 국가의 영토로 칠합니다. 다른 나라의 수도 자리는 칠해지지 않습니다.";
+
+/** 편집 안내 줄에 쓸 지금 도구의 설명 (main.ts에서 옮김). */
+export interface ToolHintState {
+  target: EditTarget;
+  brushTool: BrushTool;
+  cityTool: CityTool;
+  infraTool: InfraTool;
+  resourceTool: ResourceTool;
+  /** 도시·국경을 직접 편집하고 있는가 (아니면 자동 배치 중) */
+  civEdited: boolean;
+  /** 도로를 직접 편집해 고정했는가 */
+  roadsFixed: boolean;
+}
+
+export function toolHintText(s: ToolHintState): string {
+  const hint = s.target === "terrain"
+    ? BRUSH_TOOLS[s.brushTool].hint
+    : s.target === "city"
+      ? CITY_TOOL_HINTS[s.cityTool]
+      : s.target === "infra"
+        ? INFRA_TOOL_HINTS[s.infraTool]
+        : s.target === "resource"
+          ? RESOURCE_TOOL_HINTS[s.resourceTool]
+          : BORDER_HINT;
+  const civNote = (s.target === "city" || s.target === "border") && !s.civEdited
+    ? " (처음 편집하면 자동 배치를 멈추고 지금 상태를 고정합니다)"
+    : s.target === "infra" && (s.infraTool === "road" || s.infraTool === "erase") && !s.roadsFixed
+      ? " (도로를 처음 편집하면 자동 도로를 지금 상태로 고정합니다)"
+      : "";
+  return hint + civNote;
+}
