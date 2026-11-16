@@ -81,3 +81,50 @@ test.describe("마우스", () => {
     await expect(page.locator("#zoomLevel")).not.toHaveText("100%");
   });
 });
+
+test.describe("키보드", () => {
+  test("방향키로 확대한 지도를 옮기고, 목록에서는 방향키를 가로채지 않는다", async ({ page }) => {
+    const errors = collectErrors(page);
+    await openApp(page);
+    await page.locator("#map").focus();
+    await page.keyboard.press("ArrowRight"); // 100%에서는 옮길 곳이 없어 아무것도 하지 않는다
+    await page.keyboard.press("+");
+    await page.keyboard.press("+");
+    const before = await mapToScreen(page, 600, 400);
+    await page.keyboard.press("ArrowRight");
+    const after = await mapToScreen(page, 600, 400);
+    expect(after[0]).toBeLessThan(before[0] - 10); // 동쪽을 더 보게 되어 같은 점이 왼쪽으로 간다
+    expect(Math.abs(after[1] - before[1])).toBeLessThan(1);
+    await page.keyboard.press("Shift+ArrowDown");
+    expect((await mapToScreen(page, 600, 400))[1]).toBeLessThan(after[1] - 10);
+    // 목록(select)에 포커스가 있으면 지도는 그대로
+    await page.locator("#nameStyle").focus();
+    const fixed = await mapToScreen(page, 600, 400);
+    await page.keyboard.press("ArrowLeft");
+    expect(await mapToScreen(page, 600, 400)).toEqual(fixed);
+    expect(errors).toEqual([]);
+  });
+
+  test("편집 중 [ ]는 브러시 크기, 1~4는 지형 도구, ?는 단축키 목록", async ({ page }) => {
+    await openApp(page);
+    await page.locator("#map").focus();
+    await page.keyboard.press("e");
+    await page.keyboard.press("]");
+    await page.keyboard.press("]");
+    await expect(page.locator("#brushSize")).toHaveValue("55");
+    await page.keyboard.press("[");
+    await expect(page.locator("#brushSize")).toHaveValue("50");
+    await page.keyboard.press("3");
+    await expect(page.locator('input[name="tool"][value="flatten"]')).toBeChecked();
+    await page.keyboard.press("1");
+    await expect(page.locator('input[name="tool"][value="raise"]')).toBeChecked();
+    await page.keyboard.press("?");
+    await expect(page.locator("#shortcutHelp")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#shortcutHelp")).toBeHidden();
+    await page.click("#shortcutHelpOpen");
+    await expect(page.locator("#shortcutHelp")).toBeVisible();
+    await page.click("#shortcutHelpClose");
+    await expect(page.locator("#shortcutHelp")).toBeHidden();
+  });
+});

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { DOUBLE_TAP_MS, isTap, isTwoFingerTap, stepValue, TAP_MAX_MS, TAP_SLOP_PX, TapCounter, wheelDirection } from "../src/ui/gestures.ts";
+import { ARROW_PAN, ARROW_PAN_BIG, arrowPan, DOUBLE_TAP_MS, isTap, isTwoFingerTap, stepValue, TAP_MAX_MS, TAP_SLOP_PX, TapCounter, wheelDirection } from "../src/ui/gestures.ts";
 
 describe("누르기 판정", () => {
   const down = { x: 100, y: 100, t: 1000 };
@@ -43,5 +43,15 @@ describe("Shift+휠 브러시 크기", () => {
     assert.equal(wheelDirection({ deltaX: 0, deltaY: -100 }), 1);
     assert.equal(wheelDirection({ deltaX: 0, deltaY: 40 }), -1);
     assert.equal(wheelDirection({ deltaX: -100, deltaY: 0 }), 1);
+  });
+});
+
+describe("방향키 이동", () => {
+  test("방향키는 그쪽을 더 보이게, Shift는 크게, 다른 키는 아님", () => {
+    assert.deepEqual(arrowPan("ArrowRight", false), [ARROW_PAN, 0]);
+    assert.deepEqual(arrowPan("ArrowLeft", false), [-ARROW_PAN, 0]);
+    assert.deepEqual(arrowPan("ArrowUp", true), [0, -ARROW_PAN_BIG]);
+    assert.deepEqual(arrowPan("ArrowDown", true), [0, ARROW_PAN_BIG]);
+    assert.equal(arrowPan("a", false), undefined);
   });
 });
