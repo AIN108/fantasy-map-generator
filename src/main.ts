@@ -35,6 +35,8 @@ import {
   applyInfra, applyResources, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors, parseMapJSONText,
   natureKey, natureOf, terrainKey, toJSON, validateOptions, type NameAnchors, type Nature, type WorldMap, type WorldOptions,
 } from "./world.ts";
+import { canShare, decodeShare, encodeShare, MAX_SHARE_CHARS, type SharedMap } from "./share.ts";
+import { STORAGE_KEY } from "./ui/storage.ts";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -1365,21 +1367,75 @@ $<HTMLInputElement>("importFile").addEventListener("change", (e) => {
   if (file) importFile(file).catch((err) => setStatus(err instanceof Error ? err.message : String(err), true));
 });
 $("copyLink").addEventListener("click", async () => {
+  let link = location.href;
+  let note = "현재 지도 링크를 복사했습니다.";
+  if (hasEdits() && world && baseElevation) {
+    // 편집한 지도는 바뀐 고도·지명·문명·시설·자원을 줄여 링크 끝(&e=…)에 담는다.
+    if (!canShare()) {
+      note = "링크를 복사했습니다. 이 브라우저는 편집 내용을 링크에 담을 수 없으니 함께 보내려면 'JSON 저장'을 쓰세요.";
+    } else {
+      let data: string;
+      try {
+        data = await encodeShare(world, baseElevation, civ, infra, resourceEdits);
+      } catch (err) {
+        setStatus(`편집한 지도를 링크로 만들지 못했습니다 (${err instanceof Error ? err.message : String(err)}). 'JSON 저장'을 쓰세요.`, true);
+        return;
+      }
+      if (data.length > MAX_SHARE_CHARS) {
+        note = `편집 내용이 너무 많아(${data.length.toLocaleString("ko-KR")}자) 링크에 담지 못하고 옵션만 담았습니다. 함께 보내려면 'JSON 저장'을 쓰세요.`;
+      } else {
+        link = `${location.href.split("#")[0]}${formatHash(options)}&e=${data}`;
+        note = `편집한 지형·지명·도시·국경·시설·자원까지 담은 링크를 복사했습니다 (${link.length.toLocaleString("ko-KR")}자).`
+          + (link.length > 8000 ? " 일부 메신저에서는 긴 링크가 잘릴 수 있습니다." : "");
+      }
+    }
+  }
   try {
-    await navigator.clipboard.writeText(location.href);
-    setStatus(hasEdits()
-      ? "링크를 복사했습니다. 편집 내용은 링크에 담기지 않으니 함께 보내려면 'JSON 저장'을 쓰세요."
-      : "현재 지도 링크를 복사했습니다.");
+    await navigator.clipboard.writeText(link);
+    setStatus(note);
   } catch {
     setStatus("클립보드에 접근할 수 없습니다. 주소창의 링크를 직접 복사하세요.", true);
   }
 });
 
-// 이미 열린 탭의 주소창에 다른 옵션의 링크(#seed=…)를 붙여 넣으면 그 옵션으로 다시 만든다.
-// 지형이 바뀌어 편집이 사라지면 generate()가 먼저 묻고, 취소하면 주소를 지금 옵션으로 되돌린다.
-// derive()는 replaceState로 주소를 쓰므로 이 이벤트를 다시 부르지 않는다.
+/** 링크에 담긴 편집 지도를 연다 (JSON 파일을 불러올 때와 같은 방식). 열었으면 true. */
+async function openSharedEdits(data: string): Promise<boolean> {
+  let shared: SharedMap;
+  try {
+    shared = await decodeShare(data);
+  } catch (err) {
+    setStatus(`링크에 담긴 지도를 열지 못했습니다: ${err instanceof Error ? err.message : String(err)}`, true);
+    return false;
+  }
+  fillForm(shared.options);
+  mesh = shared.mesh;
+  currentMeshKey = meshKey(shared.options);
+  currentTerrainKey = ""; // 강제로 새 지형으로 취급
+  edited = false;
+  civ = undefined;
+  infra = emptyInfra();
+  resourceEdits = emptyResourceEdits();
+  generate(shared.options, {
+    restoreFrom: shared.elevation,
+    names: shared.anchors ? { [shared.anchors.nameStyle]: shared.anchors } : {},
+    civ: shared.civ, infra: shared.infra, resources: shared.resources,
+  });
+  if (options !== shared.options) return false; // generate가 오류를 상태 줄에 알렸다
+  setStatus("링크에 담긴 편집 지도를 열었습니다. 이 브라우저의 편집 저장본은 이 지도로 바뀌었습니다.");
+  return true;
+}
+
+const sharedDataOf = (hash: string): string | null => new URLSearchParams(hash.replace(/^#/, "")).get("e");
+const SHARED_CONFIRM = "링크에 담긴 편집 지도를 엽니다. 지금 이 브라우저의 편집 내용은 이 지도로 바뀝니다. 계속할까요?\n(필요하면 먼저 'JSON 저장'으로 보관하세요.)";
+
 window.addEventListener("hashchange", () => {
   if (!world) return;
+  const data = sharedDataOf(location.hash);
+  if (data) {
+    if (hasEdits() && !confirm(SHARED_CONFIRM)) { history.replaceState(null, "", formatHash(options)); return; }
+    void openSharedEdits(data).then((ok) => { if (!ok) history.replaceState(null, "", formatHash(options)); });
+    return;
+  }
   const next = hashTarget(location.hash, options);
   if (!next) return;
   fillForm(next);
@@ -1404,9 +1460,25 @@ Promise.race([
   document.fonts.load('600 16px "Noto Serif KR"'),
   new Promise((r) => setTimeout(r, 2500)),
 ]).catch(() => undefined).finally(() => {
+  const data = sharedDataOf(location.hash);
+  // 링크에 편집 지도가 담겨 있으면 그것을 연다. 이 브라우저에 저장된 편집이 있으면 먼저 묻는다.
+  if (data && (!browserStore()?.getItem(STORAGE_KEY) || confirm(SHARED_CONFIRM))) {
+    void openSharedEdits(data).then((ok) => {
+      if (ok) return;
+      // 링크를 열지 못했으면 평소처럼 시작하되, 왜 못 열었는지는 남긴다.
+      const why = statusEl.textContent ?? "";
+      startFromStorage();
+      setStatus(why, true);
+    });
+    return;
+  }
+  startFromStorage();
+});
+
+function startFromStorage(): void {
   const saved = loadStartupEdits(initial);
   generate(initial, saved
     ? { restoreFrom: saved.elevation, names: saved.names, civ: saved.civ, infra: saved.infra, resources: saved.resources }
     : {});
   if (saved && hasEdits()) setStatus("이 브라우저에 저장된 편집 내용을 불러왔습니다. '지형 초기화'·'자동 배치로'로 되돌릴 수 있습니다.");
-});
+}
