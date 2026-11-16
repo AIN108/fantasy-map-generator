@@ -13,7 +13,7 @@ import type { NameStyle } from "./names.ts";
 import type { PreviewInput, PreviewOutput } from "./preview.ts";
 import {
   addResource, cloneResourceEdits, emptyResourceEdits, hitResource, isEmptyResourceEdits, isResourceKind, removeResource,
-  RESOURCE_CATEGORY_KO, RESOURCE_INFO, RESOURCE_KINDS, type ResourceCategory, type ResourceEdits, type ResourceKind,
+  RESOURCE_INFO, type ResourceEdits, type ResourceKind,
 } from "./resources.ts";
 import {
   buildRenderCache, DEFAULT_LAYERS, describeCell, drawBridgeSpan, drawTunnelSpan, type Layers, type RenderCache,
@@ -29,6 +29,7 @@ import { Viewport } from "./ui/viewport.ts";
 import { stepValue } from "./ui/gestures.ts";
 import { worldPlaces, PLACE_CATEGORIES, type WorldPlace } from "./places.ts";
 import { createPlaceSearch } from "./ui/place-search.ts";
+import { renderCellInfo, renderMergeOptions, renderResourceKindOptions, renderStateLegend, renderStateOptions } from "./ui/panels.ts";
 import {
   applyInfra, applyResources, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors, parseMapJSONText,
   natureKey, natureOf, terrainKey, toJSON, validateOptions, type NameAnchors, type Nature, type WorldMap, type WorldOptions,
@@ -166,53 +167,15 @@ function setStatus(text: string, isError = false): void {
   statusEl.classList.toggle("error", isError);
 }
 
-function renderLegend(w: WorldMap): void {
-  legendEl.replaceChildren(
-    ...w.states.map((s) => {
-      const item = document.createElement("span");
-      const swatch = document.createElement("i");
-      swatch.style.background = s.color;
-      const capital = w.cities.find((c) => c.cell === s.capitalCell);
-      item.append(swatch, `${s.name} · 수도 ${capital?.name ?? "-"}`);
-      return item;
-    }),
-  );
-}
-
-/** 국경 칠하기에서 고를 국가 목록 (선택은 유지) */
+/** 국경 칠하기에서 고를 국가 목록과 없앨 때 넘겨받을 곳 */
 function renderPaintStates(w: WorldMap): void {
-  const selected = paintStateEl.value;
-  const opts = w.states.map((s) => {
-    const o = document.createElement("option");
-    o.value = String(s.id);
-    o.textContent = s.name;
-    return o;
-  });
-  const none = document.createElement("option");
-  none.value = "-1";
-  none.textContent = "무소속 (지우기)";
-  paintStateEl.replaceChildren(...opts, none);
-  if ([...paintStateEl.options].some((o) => o.value === selected)) paintStateEl.value = selected;
+  renderStateOptions(paintStateEl, w);
   renderMergeTargets();
 }
 
-/** 국가 없애기에서 영토를 넘겨받을 곳: 무소속 + 고른 나라를 뺀 나머지 */
 function renderMergeTargets(): void {
   if (!world) return;
-  const selected = mergeIntoEl.value;
-  const removing = Number(paintStateEl.value);
-  const none = document.createElement("option");
-  none.value = "-1";
-  none.textContent = "무소속";
-  const opts = world.states.filter((s) => s.id !== removing).map((s) => {
-    const o = document.createElement("option");
-    o.value = String(s.id);
-    o.textContent = s.name;
-    return o;
-  });
-  mergeIntoEl.replaceChildren(none, ...opts);
-  if ([...mergeIntoEl.options].some((o) => o.value === selected)) mergeIntoEl.value = selected;
-  $<HTMLButtonElement>("deleteState").disabled = !(removing >= 0 && world.states[removing]);
+  renderMergeOptions(mergeIntoEl, paintStateEl, $<HTMLButtonElement>("deleteState"), world);
 }
 
 function updateEditButtons(): void {
@@ -271,7 +234,7 @@ function derive(natureOnly = false): void {
     viewport.clearFocus();
     viewport.draw(painting); // 칠하는 중이면 빠르게, 손을 뗀 뒤(commit)에는 선명하게
     if (natureOnly) return;
-    renderLegend(world);
+    renderStateLegend(legendEl, world);
     placeSearch.setPlaces(worldPlaces(world));
     renderResourceLegend(resourceLegendEl, world.resources, layers.resources);
     renderPaintStates(world);
@@ -424,23 +387,6 @@ function syncResourceFields(): void {
 function selectedResourceKind(): ResourceKind {
   const v = resourceKindEl.value;
   return isResourceKind(v) ? v : "iron";
-}
-
-/** 자원 종류 목록: 분류별로 묶는다. */
-function fillResourceKinds(): void {
-  const groups = (["strategic", "luxury", "bonus"] as ResourceCategory[]).map((cat) => {
-    const g = document.createElement("optgroup");
-    g.label = RESOURCE_CATEGORY_KO[cat];
-    for (const k of RESOURCE_KINDS.filter((kind) => RESOURCE_INFO[kind].category === cat)) {
-      const o = document.createElement("option");
-      o.value = k;
-      const site = RESOURCE_INFO[k].site;
-      o.textContent = RESOURCE_INFO[k].ko + (site === "water" ? " (바다·호수)" : site === "any" ? " (육지·바다)" : "");
-      g.append(o);
-    }
-    return g;
-  });
-  resourceKindEl.replaceChildren(...groups);
 }
 
 function setTool(tool: BrushTool): void {
@@ -994,16 +940,7 @@ function onEditPointerMove(e: PointerEvent): void {
 
 function showCellInfo(x: number, y: number): void {
   if (!world) return;
-  const info = describeCell(world, findCell(world.mesh, x, y));
-  infoEl.replaceChildren(
-    ...Object.entries(info).flatMap(([k, v]) => {
-      const dt = document.createElement("dt");
-      dt.textContent = k;
-      const dd = document.createElement("dd");
-      dd.textContent = v;
-      return [dt, dd];
-    }),
-  );
+  renderCellInfo(infoEl, describeCell(world, findCell(world.mesh, x, y)));
 }
 
 function endPointer(e: PointerEvent): void {
@@ -1478,7 +1415,7 @@ document.fonts?.addEventListener?.("loadingdone", () => {
 // ── 시작 ─────────────────────────────────────────────────────────────
 const initial: WorldOptions = { ...DEFAULT_OPTIONS, ...parseHash(location.hash) };
 fillForm(initial);
-fillResourceKinds();
+renderResourceKindOptions(resourceKindEl);
 setTool(brush.tool);
 setEditTarget("terrain");
 syncBrush();
