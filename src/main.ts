@@ -2,7 +2,7 @@ import {
   addCity, cloneCiv, createState, deleteCity, deleteState, ensureCivNames, makeCapital,
   moveCity, paintTerritory, renameCity, renameState, snapshotCiv, type CivState, type EditResult,
 } from "./civedit.ts";
-import { applyBrush, BRUSH_TOOLS, EditHistory, type Brush, type BrushTool } from "./editor.ts";
+import { applyBrush, BRUSH_TOOLS, EditHistory, sameElevation, type Brush, type BrushTool } from "./editor.ts";
 import {
   addFacility, addPath, addPort, addSeaRoute, addSpan, cloneInfra, toggleSpanMode, hitSpan, MAX_SPAN_LENGTH, moveSpan, spanLinks,
   SPAN_MODE_KO, type SpanMode, type SpanPart, emptyInfra, eraseAt, FACILITY_INFO, hitPoint,
@@ -807,6 +807,8 @@ let draggingPoint: { kind: PointKind; index: number } | null = null;
 /** 이동 도구로 끌고 있는 다리·터널 (끝 하나 또는 몸통 전체), 잡은 지점의 지도 좌표 */
 let draggingSpan: { kind: "bridge" | "tunnel"; index: number; part: SpanPart; grabX: number; grabY: number } | null = null;
 let borderBefore: Snapshot | undefined;
+/** 지형 붓질을 시작할 때의 고도 (손을 뗐을 때 바뀐 것이 없으면 되돌리기 기록을 남기지 않는다) */
+let strokeStart: Float64Array | undefined;
 
 /**
  * 칠하는 동안의 미리보기. Worker가 있으면 맡기고(메인 스레드는 그리기만), 없으면 프레임당 한 번 직접 계산한다.
@@ -943,6 +945,7 @@ function onEditPointerDown(e: PointerEvent): void {
   if (editTarget === "terrain") {
     viewport.capturePointer(e.pointerId);
     editHistory.record(snap());
+    strokeStart = Float64Array.from(elevation);
     flattenTarget = elevation[findCell(mesh, x, y)];
     painting = true;
     lastPoint = undefined;
@@ -1099,6 +1102,9 @@ function endPointer(e: PointerEvent): void {
   if (!painting) return;
   painting = false;
   lastPoint = undefined;
+  // 칠했지만 값이 하나도 바뀌지 않은 붓질(가장자리·이미 평평한 곳 등)은 되돌리기 단계로 남기지 않는다
+  if (editTarget === "terrain" && strokeStart && elevation && sameElevation(strokeStart, elevation)) editHistory.discardLast();
+  strokeStart = undefined;
   if (editTarget === "border" && borderBefore) {
     editHistory.record(borderBefore);
     borderBefore = undefined;
@@ -1114,6 +1120,7 @@ function cancelPointerEdit(): void {
   if (painting) {
     painting = false;
     lastPoint = undefined;
+    strokeStart = undefined;
     if (editTarget === "terrain") {
       const before = editHistory.discardLast();
       if (before) { elevation = before.elevation; changed = true; }

@@ -69,6 +69,10 @@ export function applyBrush(
   return true;
 }
 
+/** 두 고도 배열이 값까지 똑같은가 (칠했지만 실제로 바뀐 셀이 없는 붓질을 가려낼 때) */
+export const sameElevation = (a: Float64Array, b: Float64Array): boolean =>
+  a.length === b.length && a.every((v, i) => v === b[i]);
+
 /**
  * 편집 단위 되돌리기/다시하기. 편집 직전 상태의 스냅샷을 보관한다.
  * 스냅샷 타입은 자유롭게 정할 수 있다 (기본은 고도 배열, 화면에서는 고도+문명 묶음).

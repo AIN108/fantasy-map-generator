@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { applyBrush, decodeElevation, EditHistory, encodeElevation } from "../src/editor.ts";
+import { applyBrush, decodeElevation, EditHistory, encodeElevation, sameElevation } from "../src/editor.ts";
 import { findCell } from "../src/mesh.ts";
 import {
   createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, parseMapJSON, toJSON, type WorldOptions,
@@ -105,6 +105,24 @@ describe("되돌리기", () => {
     h.undo(e);
     h.record(e);
     assert.equal(h.canRedo, false);
+  });
+
+  test("붓이 셀에 닿았다고(applyBrush=true) 값이 바뀐 것은 아니다: sameElevation으로 가려 빈 기록을 버린다", () => {
+    // 가장자리 밖은 이미 평평한 땅. 그 높이로 평탄화하면 닿은 셀은 있어도 값은 그대로다.
+    const flat = Float64Array.from(base, (v, i) => (mesh.isEdge[i] ? Math.min(v, -0.05) : 0.3));
+    const c = findCell(mesh, OPTS.width / 2, OPTS.height / 2);
+    const h = new EditHistory();
+    const start = Float64Array.from(flat);
+    h.record(flat);
+    assert.equal(applyBrush(mesh, flat, { tool: "flatten", radius: 40, strength: 1 }, mesh.x[c], mesh.y[c], 0.3), true);
+    assert.equal(sameElevation(start, flat), true);
+    if (sameElevation(start, flat)) h.discardLast();
+    assert.equal(h.canUndo, false, "바뀐 것이 없으면 되돌리기 단계가 남지 않는다");
+
+    // 아주 조금이라도 바뀌면 같지 않다 (기록을 남긴다)
+    applyBrush(mesh, flat, { tool: "raise", radius: 40, strength: 0.01 }, mesh.x[c], mesh.y[c]);
+    assert.equal(sameElevation(start, flat), false);
+    assert.equal(sameElevation(start, start.subarray(1)), false, "길이가 다르면 다르다");
   });
 });
 
