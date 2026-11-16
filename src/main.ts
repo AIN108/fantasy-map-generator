@@ -4,7 +4,7 @@ import {
 } from "./civedit.ts";
 import { applyBrush, EditHistory, sameElevation, type Brush, type BrushTool } from "./editor.ts";
 import {
-  addFacility, addPath, addPort, addSeaRoute, addSpan, cloneInfra, toggleSpanMode, hitSpan, MAX_SPAN_LENGTH, moveSpan, spanLinks,
+  addFacility, addPath, addPort, addSeaRoute, addSpan, cloneInfra, toggleSpanMode, hitSpan, moveSpan, spanLinks,
   SPAN_MODE_KO, type SpanMode, type SpanPart, emptyInfra, eraseAt, FACILITY_INFO, hitPoint,
   isEmptyInfra, movePoint, routePath, routeSea, type FacilityKind, type Infra, type PointKind,
 } from "./infra.ts";
@@ -16,7 +16,7 @@ import {
   RESOURCE_INFO, type ResourceEdits, type ResourceKind,
 } from "./resources.ts";
 import {
-  buildRenderCache, DEFAULT_LAYERS, describeCell, drawBridgeSpan, drawTunnelSpan, type Layers, type RenderCache,
+  buildRenderCache, DEFAULT_LAYERS, describeCell, type Layers, type RenderCache,
 } from "./render.ts";
 import { fillForm, formatHash, formatters, hashTarget, parseHash, RANGE_FIELDS, readForm } from "./ui/options.ts";
 import { loadSavedEdits, saveEdits as saveEdits_, type KeyValueStore } from "./ui/storage.ts";
@@ -31,6 +31,7 @@ import { worldPlaces, PLACE_CATEGORIES, type WorldPlace } from "./places.ts";
 import { createPlaceSearch } from "./ui/place-search.ts";
 import { createExportPanel } from "./ui/export-panel.ts";
 import { installShortcutKeys } from "./ui/shortcuts.ts";
+import { drawInfraCursor as drawInfraCursorOn, isSpanTool as isSpanToolOf } from "./ui/infra-cursor.ts";
 import { renderCellInfo, renderMergeOptions, renderResourceKindOptions, renderStateLegend, renderStateOptions } from "./ui/panels.ts";
 import {
   applyInfra, applyResources, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors,
@@ -443,102 +444,10 @@ function drawCursor(x: number, y: number): void {
 
 function drawInfraCursor(x: number, y: number): void {
   if (!world || !mesh) return;
-  const o = viewport.octx;
-  if (draggingPoint) {
-    const item = draggingPoint.kind === "port" ? infra.ports[draggingPoint.index] : infra.facilities[draggingPoint.index];
-    if (!item) return;
-    const to = findCell(mesh, x, y);
-    o.setLineDash([4, 4]);
-    o.strokeStyle = "rgba(0,0,0,0.6)";
-    o.lineWidth = 1;
-    o.beginPath();
-    o.moveTo(mesh.x[item.cell], mesh.y[item.cell]);
-    o.lineTo(mesh.x[to], mesh.y[to]);
-    o.stroke();
-    o.setLineDash([]);
-    viewport.strokeCircle(mesh.x[to], mesh.y[to], 8);
-    return;
-  }
-  if (isSpanTool() && routeStart >= 0) {
-    const end = findCell(mesh, x, y);
-    const [ax, ay, bx, by] = [mesh.x[routeStart], mesh.y[routeStart], mesh.x[end], mesh.y[end]];
-    const tooLong = Math.hypot(bx - ax, by - ay) > MAX_SPAN_LENGTH;
-    o.globalAlpha = tooLong ? 0.4 : 0.9;
-    if (infraTool === "bridge") drawBridgeSpan(o, ax, ay, bx, by, spanMode()); else drawTunnelSpan(o, ax, ay, bx, by, spanMode());
-    o.globalAlpha = 1;
-    viewport.strokeCircle(ax, ay, 5);
-    return;
-  }
-  if (isLineTool() && routeStart >= 0) {
-    if (routePreview && routePreview.length >= 2) {
-      o.beginPath();
-      o.moveTo(mesh.x[routePreview[0]], mesh.y[routePreview[0]]);
-      for (const c of routePreview) o.lineTo(mesh.x[c], mesh.y[c]);
-      o.lineWidth = 4;
-      o.strokeStyle = "rgba(255,255,255,0.85)";
-      o.stroke();
-      o.lineWidth = 2;
-      o.strokeStyle = infraTool === "rail" ? "#2b2b2b" : infraTool === "sea" ? "rgba(18,38,78,0.95)" : "rgba(110,70,40,0.95)";
-      o.stroke();
-    }
-    viewport.strokeCircle(mesh.x[routeStart], mesh.y[routeStart], 5);
-    return;
-  }
-  if (infraTool === "sea") {
-    const port = snapToPort(x, y);
-    if (port >= 0) viewport.strokeCircle(mesh.x[port], mesh.y[port], 10);
-    else viewport.strokeCircle(x, y, 6, [3, 3]);
-    return;
-  }
-  if (infraTool === "toggleMode") {
-    const span = hitSpan(mesh, infra, x, y, viewport.hitRadius());
-    if (span) {
-      const sp = (span.kind === "bridge" ? infra.bridges : infra.tunnels)[span.index];
-      o.lineWidth = 7;
-      o.strokeStyle = "rgba(255,255,255,0.55)";
-      o.beginPath();
-      o.moveTo(mesh.x[sp.a], mesh.y[sp.a]);
-      o.lineTo(mesh.x[sp.b], mesh.y[sp.b]);
-      o.stroke();
-    } else viewport.strokeCircle(x, y, 6, [3, 3]);
-    return;
-  }
-  if (infraTool === "move") {
-    if (draggingSpan) {
-      const cells = movedSpanCells(x, y);
-      if (!cells) return;
-      const [a, b] = cells;
-      const tooLong = Math.hypot(mesh.x[b] - mesh.x[a], mesh.y[b] - mesh.y[a]) > MAX_SPAN_LENGTH;
-      o.globalAlpha = tooLong ? 0.4 : 0.9;
-      const mode = (draggingSpan.kind === "bridge" ? infra.bridges : infra.tunnels)[draggingSpan.index]?.mode ?? "road";
-      if (draggingSpan.kind === "bridge") drawBridgeSpan(o, mesh.x[a], mesh.y[a], mesh.x[b], mesh.y[b], mode);
-      else drawTunnelSpan(o, mesh.x[a], mesh.y[a], mesh.x[b], mesh.y[b], mode);
-      o.globalAlpha = 1;
-      return;
-    }
-    const hit = hitPoint(mesh, infra, x, y, viewport.hitRadius());
-    const item = hit && (hit.kind === "port" ? infra.ports[hit.index] : infra.facilities[hit.index]);
-    if (item) { viewport.strokeCircle(mesh.x[item.cell], mesh.y[item.cell], 10); return; }
-    const span = hitSpan(mesh, infra, x, y, viewport.hitRadius());
-    if (span) {
-      const sp = (span.kind === "bridge" ? infra.bridges : infra.tunnels)[span.index];
-      if (span.part === "body") {
-        o.lineWidth = 6;
-        o.strokeStyle = "rgba(255,255,255,0.5)";
-        o.beginPath();
-        o.moveTo(mesh.x[sp.a], mesh.y[sp.a]);
-        o.lineTo(mesh.x[sp.b], mesh.y[sp.b]);
-        o.stroke();
-      } else {
-        const c = span.part === "a" ? sp.a : sp.b;
-        viewport.strokeCircle(mesh.x[c], mesh.y[c], 7);
-      }
-    }
-    return;
-  }
-  const city = infraTool === "road" || infraTool === "rail" ? nearestWorldCity(x, y) : -1;
-  if (city >= 0) viewport.strokeCircle(mesh.x[world.cities[city].cell], mesh.y[world.cities[city].cell], 10);
-  else viewport.strokeCircle(x, y, infraTool === "erase" ? viewport.hitRadius() : 6, [3, 3]);
+  drawInfraCursorOn(viewport, {
+    world, mesh, infra, tool: infraTool, draggingPoint, draggingSpan, routeStart, routePreview,
+    spanMode, snapToPort, movedSpanCells, nearestCity: nearestWorldCity,
+  }, x, y);
 }
 
 /** 끄는 동안 미리보기 경로를 프레임당 한 번만 계산한다 */
@@ -688,8 +597,7 @@ function snapToPort(x: number, y: number): number {
   return best;
 }
 
-const isLineTool = (): boolean => infraTool === "road" || infraTool === "rail" || infraTool === "sea";
-const isSpanTool = (): boolean => infraTool === "bridge" || infraTool === "tunnel";
+const isSpanTool = (): boolean => isSpanToolOf(infraTool);
 const spanMode = (): SpanMode => ($<HTMLSelectElement>("spanMode").value === "rail" ? "rail" : "road");
 
 function takeFeatureName(): string | undefined {
