@@ -13,7 +13,8 @@ const normalize = (s: string): string => s.normalize("NFKC").toLocaleLowerCase("
 export function searchPlaces<T extends SearchPlace>(places: readonly T[], query: string, category = "all"): T[] {
   const q = normalize(query);
   const words = q.split(" ").filter(Boolean);
-  // 캠퍼스 안내 번호는 1로 10·11번까지 찾지 않고 정확히 일치시킨다.
+  // 번호(number)가 있는 장소는 "1"로 10·11번까지 찾지 않고 정확히 일치시킨다.
+  // 이 앱의 장소(places.ts)에는 번호가 없어 지금은 쓰이지 않는다 (번호가 없으면 아래 낱말 검색으로 넘어간다).
   const numbered = /^(\d+)(?:번)?$/.exec(q);
   const byNumber = numbered && places.some((p) => p.number !== undefined && (category === "all" || p.category === category)) ? Number(numbered[1]) : undefined;
   return places.filter((p) => {
