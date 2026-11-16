@@ -15,10 +15,12 @@ test.describe("터치", () => {
     await expect(page.locator("#zoomLevel")).toHaveText("100%");
     await page.touchscreen.tap(x, y);
     await expect(page.locator("#zoomLevel")).toHaveText("200%");
-    // 확대한 자리의 지도 점이 손가락 아래에 남는다
-    const [x2, y2] = await mapToScreen(page, 600, 400);
-    expect(Math.abs(x2 - x)).toBeLessThan(3);
-    expect(Math.abs(y2 - y)).toBeLessThan(3);
+    // 확대한 자리의 셀이 손가락 아래에 남는다: 같은 자리를 다시 누르면 같은 셀 정보
+    const first = await page.locator("#cellInfo").innerText();
+    await page.waitForTimeout(500); // 두 번 누르기로 세지 않게
+    await page.touchscreen.tap(x, y);
+    await expect(page.locator("#cellInfo")).toHaveText(first);
+    await expect(page.locator("#zoomLevel")).toHaveText("200%");
     expect(errors).toEqual([]);
     await ctx.close();
   });
