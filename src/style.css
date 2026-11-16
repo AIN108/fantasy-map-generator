@@ -124,6 +124,10 @@ button.primary { width: 100%; background: var(--accent); color: var(--accent-tex
   display: block;
   width: 100%;
   height: auto;
+  /* 기본 지도(1200×800) 비율을 처음부터 준다. 없으면 첫 화면은 캔버스 속성의 비율(내용 상자 기준)로,
+     지도를 그린 뒤에는 Viewport.setMapSize가 넣는 같은 비율(테두리 포함 상자 기준)로 잡혀 높이가 한 번 바뀌고,
+     그 변화가 글꼴 로드와 겹치면 WebKit이 "ResizeObserver loop completed…" 경고를 낸다. */
+  aspect-ratio: 1200 / 800;
   border-radius: 10px;
   background: var(--map-bg);
   border: 1px solid var(--line);
