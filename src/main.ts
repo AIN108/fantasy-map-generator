@@ -2,7 +2,7 @@ import {
   addCity, cloneCiv, createState, deleteCity, deleteState, ensureCivNames, makeCapital,
   moveCity, paintTerritory, renameCity, renameState, snapshotCiv, type CivState, type EditResult,
 } from "./civedit.ts";
-import { applyBrush, BRUSH_TOOLS, EditHistory, sameElevation, type Brush, type BrushTool } from "./editor.ts";
+import { applyBrush, EditHistory, sameElevation, type Brush, type BrushTool } from "./editor.ts";
 import {
   addFacility, addPath, addPort, addSeaRoute, addSpan, cloneInfra, toggleSpanMode, hitSpan, MAX_SPAN_LENGTH, moveSpan, spanLinks,
   SPAN_MODE_KO, type SpanMode, type SpanPart, emptyInfra, eraseAt, FACILITY_INFO, hitPoint,
@@ -30,6 +30,7 @@ import { stepValue } from "./ui/gestures.ts";
 import { worldPlaces, PLACE_CATEGORIES, type WorldPlace } from "./places.ts";
 import { createPlaceSearch } from "./ui/place-search.ts";
 import { createExportPanel } from "./ui/export-panel.ts";
+import { installShortcutKeys } from "./ui/shortcuts.ts";
 import { renderCellInfo, renderMergeOptions, renderResourceKindOptions, renderStateLegend, renderStateOptions } from "./ui/panels.ts";
 import {
   applyInfra, applyResources, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors,
@@ -1205,33 +1206,15 @@ const syncBrush = (): void => {
 brushSize.addEventListener("input", syncBrush);
 brushStrength.addEventListener("input", syncBrush);
 
-// 편집 편의 단축키: [ ] 브러시 크기, 1~4 지형 도구, ? 단축키 목록 (글자 칸·목록에서는 쓰지 않는다)
-const TERRAIN_KEYS: BrushTool[] = ["raise", "lower", "flatten", "smooth"];
-document.addEventListener("keydown", (e) => {
-  const target = e.target as HTMLElement;
-  if (isTypingTarget(target) || target?.tagName === "SELECT" || e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.key === "?") {
-    e.preventDefault();
-    const help = $<HTMLDialogElement>("shortcutHelp");
-    if (!help.open) help.showModal();
-    return;
-  }
-  if (!editMode) return;
-  if ((e.key === "[" || e.key === "]") && (editTarget === "terrain" || editTarget === "border")) {
-    e.preventDefault();
-    brushSize.value = String(stepValue(Number(brushSize.value), e.key === "]" ? 1 : -1, Number(brushSize.min), Number(brushSize.max), Number(brushSize.step)));
-    syncBrush();
-    return;
-  }
-  const n = TERRAIN_KEYS[Number(e.key) - 1];
-  if (editTarget === "terrain" && /^[1-4]$/.test(e.key) && n) {
-    e.preventDefault();
-    setTool(n);
-    setStatus(`지형 도구: ${BRUSH_TOOLS[n].ko}`);
-  }
+// 편집 편의 단축키: [ ] 브러시 크기, 1~4 지형 도구, ? 단축키 목록
+installShortcutKeys({
+  editMode: () => editMode,
+  editTarget: () => editTarget,
+  brushSize,
+  syncBrush,
+  setTool,
+  status: (text) => setStatus(text),
 });
-$("shortcutHelpOpen").addEventListener("click", () => $<HTMLDialogElement>("shortcutHelp").showModal());
-$("shortcutHelpClose").addEventListener("click", () => $<HTMLDialogElement>("shortcutHelp").close());
 $("undo").addEventListener("click", undo);
 $("redo").addEventListener("click", redo);
 $("resetEdits").addEventListener("click", () => {
