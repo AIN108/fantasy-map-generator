@@ -7,10 +7,11 @@ test.describe("터치", () => {
     const page = await ctx.newPage();
     const errors = collectErrors(page);
     await openApp(page);
-    await expect(page.locator("#cellInfo dt")).toHaveCount(0);
+    await expect(page.locator("#cellInfo")).toContainText("안내");
     const [x, y] = await mapToScreen(page, 600, 400);
     await page.touchscreen.tap(x, y);
-    await expect(page.locator("#cellInfo dt").first()).toBeVisible();
+    await expect(page.locator("#cellInfo")).not.toContainText("안내");
+    await expect(page.locator("#cellInfo dt")).not.toHaveCount(1);
     await expect(page.locator("#zoomLevel")).toHaveText("100%");
     await page.touchscreen.tap(x, y);
     await expect(page.locator("#zoomLevel")).toHaveText("200%");
