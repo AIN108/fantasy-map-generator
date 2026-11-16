@@ -1196,6 +1196,26 @@ function download(name: string, blob: Blob): void {
 const safeFileName = (s: string): string => s.replace(/[^\p{L}\p{N}_-]+/gu, "_").slice(0, 40) || "map";
 const MAX_IMPORT_BYTES = 20 * 1024 * 1024;
 
+/** 파일·링크에서 읽어 검증한 지도로 바꾼다 (지금 편집은 버린다). 만들었으면 true, 못 만들었으면 generate가 상태 줄에 알린다. */
+function openLoadedMap(map: SharedMap): boolean {
+  fillForm(map.options);
+  mesh = map.mesh;
+  currentMeshKey = meshKey(map.options);
+  currentTerrainKey = ""; // 강제로 새 지형으로 취급
+  edited = false;
+  civ = undefined;
+  infra = emptyInfra();
+  resourceEdits = emptyResourceEdits();
+  generate(map.options, {
+    restoreFrom: map.elevation,
+    names: map.anchors ? { [map.anchors.nameStyle]: map.anchors } : {},
+    civ: map.civ,
+    infra: map.infra,
+    resources: map.resources,
+  });
+  return options === map.options;
+}
+
 async function importFile(file: File): Promise<void> {
   if (file.size > MAX_IMPORT_BYTES) throw new Error("파일이 너무 큽니다 (20MB 이하만 불러올 수 있습니다).");
   const parsed = parseMapJSONText(await file.text());
@@ -1204,21 +1224,7 @@ async function importFile(file: File): Promise<void> {
     setStatus("불러오기를 취소했습니다.");
     return;
   }
-  fillForm(parsed.options);
-  mesh = parsed.mesh;
-  currentMeshKey = meshKey(parsed.options);
-  currentTerrainKey = ""; // 강제로 새 지형으로 취급
-  edited = false;
-  civ = undefined;
-  infra = emptyInfra();
-  resourceEdits = emptyResourceEdits();
-  generate(parsed.options, {
-    restoreFrom: parsed.elevation,
-    names: parsed.anchors ? { [parsed.anchors.nameStyle]: parsed.anchors } : {},
-    civ: parsed.civ,
-    infra: parsed.infra,
-    resources: parsed.resources,
-  });
+  openLoadedMap(parsed);
   const extras = [
     edited ? "편집된 지형" : "", civ ? "직접 편집한 도시·국경" : "", isEmptyInfra(infra) ? "" : "도로·철도·시설",
     isEmptyResourceEdits(resourceEdits) ? "" : "직접 편집한 자원",
@@ -1445,20 +1451,7 @@ async function openSharedEdits(data: string): Promise<boolean> {
     setStatus(`링크에 담긴 지도를 열지 못했습니다: ${err instanceof Error ? err.message : String(err)}`, true);
     return false;
   }
-  fillForm(shared.options);
-  mesh = shared.mesh;
-  currentMeshKey = meshKey(shared.options);
-  currentTerrainKey = ""; // 강제로 새 지형으로 취급
-  edited = false;
-  civ = undefined;
-  infra = emptyInfra();
-  resourceEdits = emptyResourceEdits();
-  generate(shared.options, {
-    restoreFrom: shared.elevation,
-    names: shared.anchors ? { [shared.anchors.nameStyle]: shared.anchors } : {},
-    civ: shared.civ, infra: shared.infra, resources: shared.resources,
-  });
-  if (options !== shared.options) return false; // generate가 오류를 상태 줄에 알렸다
+  if (!openLoadedMap(shared)) return false; // generate가 오류를 상태 줄에 알렸다
   setStatus("링크에 담긴 편집 지도를 열었습니다. 이 브라우저의 편집 저장본은 이 지도로 바뀌었습니다.");
   return true;
 }
