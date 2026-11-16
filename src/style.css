@@ -212,6 +212,8 @@ button:disabled:hover { border-color: var(--line); }
 @media (max-width: 860px) {
   .app { grid-template-columns: 1fr; padding: 16px; }
   .panel { position: static; max-height: none; overflow: visible; }
+  /* 한 단 화면에서는 셀 정보가 지도 위에 있다. 지도를 눌러 정보가 늘어날 때 지도가 손가락 아래에서 밀리지 않도록 7줄 높이를 미리 잡아 둔다. */
+  .info dl#cellInfo { min-height: calc(7 * 1.5em + 6 * 2px); align-content: start; }
 }
 /* 좁은 화면: 확대 버튼이 지도를 가리지 않게 지도 아래로 옮긴다 */
 @media (max-width: 600px) {
