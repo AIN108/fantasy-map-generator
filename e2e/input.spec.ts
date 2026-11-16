@@ -19,7 +19,7 @@ test.describe("터치", () => {
     const first = await page.locator("#cellInfo").innerText();
     await page.waitForTimeout(500); // 두 번 누르기로 세지 않게
     await page.touchscreen.tap(x, y);
-    await expect(page.locator("#cellInfo")).toHaveText(first);
+    await expect.poll(() => page.locator("#cellInfo").innerText()).toBe(first);
     await expect(page.locator("#zoomLevel")).toHaveText("200%");
     expect(errors).toEqual([]);
     await ctx.close();
