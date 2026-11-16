@@ -87,6 +87,8 @@ export class Viewport {
   private twoFingerStart: PinchSample | undefined;
   /** 손가락으로 두 번 누르기 (확대) */
   private readonly taps = new TapCounter();
+  /** 마지막으로 지도를 누른 입력 (터치·펜의 두 번 누르기에 브라우저가 덧붙이는 dblclick을 가려낸다) */
+  private lastPointerType = "mouse";
   /** 두 손가락 제스처 뒤 남은 손가락으로는 편집하지 않는다 (모두 뗄 때까지). */
   private gestureLock = false;
   private spaceHeld = false;
@@ -354,6 +356,7 @@ export class Viewport {
   }
 
   private onPointerDown(e: PointerEvent): void {
+    this.lastPointerType = e.pointerType;
     this.clearFocus();
     this.pointers.set(e.pointerId, this.canvasPx(e));
     this.touchPts.set(e.pointerId, [e.clientX, e.clientY]);
@@ -525,6 +528,8 @@ export class Viewport {
     // 편집 모드가 아닐 때 더블클릭: 그 자리를 2배 확대 (Shift: 축소)
     c.addEventListener("dblclick", (e) => {
       if (this.hooks.editMode() || !this.hooks.scene()) return;
+      // 터치·펜으로 두 번 누르면 브라우저에 따라 dblclick이 뒤따른다. 그 확대는 onTap의 두 번 누르기가 이미 했으므로 무시한다.
+      if (this.lastPointerType !== "mouse") return;
       e.preventDefault();
       this.zoomAtClient(e.clientX, e.clientY, e.shiftKey ? 0.5 : 2);
     });

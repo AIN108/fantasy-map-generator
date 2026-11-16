@@ -33,6 +33,20 @@ test.describe("터치", () => {
     await ctx.close();
   });
 
+  test("두 번 누른 뒤 브라우저가 덧붙이는 dblclick으로 한 번 더 확대하지 않는다", async ({ browser, browserName }) => {
+    const ctx = await browser.newContext({ ...devices[browserName === "webkit" ? "iPhone 13" : "Pixel 7"] });
+    const page = await ctx.newPage();
+    await openApp(page);
+    const [x, y] = await mapToScreen(page, 600, 400);
+    await page.touchscreen.tap(x, y);
+    await page.touchscreen.tap(x, y);
+    // 브라우저(버전)에 따라 dblclick이 오기도 한다. 오지 않는 브라우저에서도 같은 상황이 되도록 직접 보낸다.
+    await page.evaluate(([cx, cy]) => document.getElementById("map")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, clientX: cx, clientY: cy, detail: 2 })), [x, y]);
+    await page.waitForTimeout(300);
+    await expect(page.locator("#zoomLevel")).toHaveText("200%");
+    await ctx.close();
+  });
+
   test("두 손가락으로 짧게 누르면 한 단계 축소된다", async ({ browser, browserName }) => {
     test.skip(browserName !== "chromium", "두 손가락 입력은 Chromium CDP로만 흉내 낼 수 있다");
     const ctx = await browser.newContext({ viewport: { width: 412, height: 915 }, hasTouch: true, isMobile: true });
