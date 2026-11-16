@@ -18,7 +18,7 @@ import {
 import {
   buildRenderCache, DEFAULT_LAYERS, describeCell, drawBridgeSpan, drawTunnelSpan, type Layers, type RenderCache,
 } from "./render.ts";
-import { fillForm, formatHash, formatters, parseHash, RANGE_FIELDS, readForm } from "./ui/options.ts";
+import { fillForm, formatHash, formatters, hashTarget, parseHash, RANGE_FIELDS, readForm } from "./ui/options.ts";
 import { loadSavedEdits, saveEdits as saveEdits_, type KeyValueStore } from "./ui/storage.ts";
 import { editShortcut, isTypingTarget } from "./ui/dom.ts";
 import { renderResourceLegend } from "./ui/resource-legend.ts";
@@ -1372,6 +1372,22 @@ $("copyLink").addEventListener("click", async () => {
       : "현재 지도 링크를 복사했습니다.");
   } catch {
     setStatus("클립보드에 접근할 수 없습니다. 주소창의 링크를 직접 복사하세요.", true);
+  }
+});
+
+// 이미 열린 탭의 주소창에 다른 옵션의 링크(#seed=…)를 붙여 넣으면 그 옵션으로 다시 만든다.
+// 지형이 바뀌어 편집이 사라지면 generate()가 먼저 묻고, 취소하면 주소를 지금 옵션으로 되돌린다.
+// derive()는 replaceState로 주소를 쓰므로 이 이벤트를 다시 부르지 않는다.
+window.addEventListener("hashchange", () => {
+  if (!world) return;
+  const next = hashTarget(location.hash, options);
+  if (!next) return;
+  fillForm(next);
+  generate(next);
+  if (options !== next) {
+    // 취소했거나 범위를 벗어난 값이라 만들지 않았다 (오류는 generate가 상태 줄에 알린다)
+    fillForm(options);
+    history.replaceState(null, "", formatHash(options));
   }
 });
 

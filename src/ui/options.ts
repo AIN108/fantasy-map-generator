@@ -42,6 +42,15 @@ export function formatHash(o: WorldOptions): string {
   return `#${p}`;
 }
 
+/**
+ * 주소의 해시가 가리키는 옵션. 지금 옵션(current)과 링크에 담기는 항목이 모두 같으면 undefined (할 일 없음).
+ * 해시에 없는 항목은 처음 열 때처럼 기본값으로 본다.
+ */
+export function hashTarget(hash: string, current: WorldOptions): WorldOptions | undefined {
+  const next: WorldOptions = { ...DEFAULT_OPTIONS, ...parseHash(hash) };
+  return formatHash(next) === formatHash(current) ? undefined : next;
+}
+
 const byId = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
   if (!el) throw new Error(`#${id} 요소가 없습니다.`);

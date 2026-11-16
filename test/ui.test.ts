@@ -7,6 +7,7 @@ import { formatHash, parseHash } from "../src/ui/options.ts";
 import { loadSavedEdits, saveEdits, STORAGE_KEY, type KeyValueStore } from "../src/ui/storage.ts";
 import { eul } from "../src/ui/text.ts";
 import { createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, terrainKey, type WorldOptions } from "../src/world.ts";
+import { hashTarget } from "../src/ui/options.ts";
 
 describe("목적격 조사", () => {
   test("받침 있으면 '을', 없으면 '를'", () => {
@@ -57,6 +58,15 @@ describe("URL 해시", () => {
     assert.equal(p.cells, undefined);
     assert.equal(p.states, 5);
     assert.deepEqual(parseHash(""), {});
+  });
+  test("hashTarget: 링크의 옵션이 지금과 같으면 할 일 없음, 다르면 그 옵션 (없는 항목은 기본값)", () => {
+    const cur: WorldOptions = { ...DEFAULT_OPTIONS, seed: "청운-1", states: 8 };
+    assert.equal(hashTarget(formatHash(cur), cur), undefined);
+    assert.equal(hashTarget(`${formatHash(cur)}&e=xyz`, cur), undefined, "옵션 아닌 조각은 비교하지 않는다");
+    assert.deepEqual(hashTarget(formatHash({ ...cur, seed: "백야-2" }), cur), { ...cur, seed: "백야-2" });
+    assert.deepEqual(hashTarget("#seed=백야-2", cur), { ...DEFAULT_OPTIONS, seed: "백야-2" }, "적히지 않은 국가 수는 기본값");
+    assert.deepEqual(hashTarget("", DEFAULT_OPTIONS), undefined);
+    assert.equal(hashTarget("#cells=1", DEFAULT_OPTIONS)?.cells, 1, "범위 검사는 generate(validateOptions)가 한다");
   });
 });
 
