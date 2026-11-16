@@ -3,7 +3,7 @@ import { describe, test } from "node:test";
 import { applyBrush, decodeElevation, EditHistory, encodeElevation } from "../src/editor.ts";
 import { findCell } from "../src/mesh.ts";
 import {
-  createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, parseMapJSON, toJSON, type WorldOptions,
+  createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, parseMapJSON, parseMapJSONText, toJSON, type WorldOptions,
 } from "../src/world.ts";
 
 const OPTS: WorldOptions = { ...DEFAULT_OPTIONS, seed: "편집", cells: 3000, width: 900, height: 600 };
@@ -133,5 +133,16 @@ describe("저장 형식", () => {
     const json = toJSON(deriveWorld(OPTS, mesh, base)) as { cells: { elevation: unknown }[] };
     json.cells[5].elevation = "높음";
     assert.throws(() => parseMapJSON(json), /5번 셀/);
+  });
+
+  test("파일 글 읽기: JSON이 아니면 한국어로 알리고, 맞으면 parseMapJSON과 같은 결과", () => {
+    const text = JSON.stringify(toJSON(deriveWorld(OPTS, mesh, base)));
+    assert.deepEqual(parseMapJSONText(text), parseMapJSON(JSON.parse(text)));
+    for (const bad of ["", "not json", text.slice(0, 1000), "{\"format\":"]) {
+      assert.throws(() => parseMapJSONText(bad), (e: unknown) => e instanceof Error && e.message === "지도 파일을 읽을 수 없습니다: JSON 형식이 아니거나 일부가 잘렸습니다.");
+    }
+    // JSON이지만 내용이 틀리면 원래 검사의 한국어 문구 그대로
+    assert.throws(() => parseMapJSONText("null"), /JSON 객체가 아닙니다/);
+    assert.throws(() => parseMapJSONText("{\"format\":\"other\"}"), /지원하지 않는 형식/);
   });
 });
