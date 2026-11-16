@@ -2,7 +2,7 @@ import { renderWorld, type Layers, type RenderCache } from "../render.ts";
 import { anchoredView, clampView, identityView, MAX_SCALE, MIN_SCALE, sameView, toMap, zoomAt, type View } from "../view.ts";
 import type { WorldMap } from "../world.ts";
 import { isTypingTarget } from "./dom.ts";
-import { isTap, isTwoFingerTap, TapCounter, type PinchSample, type PointerSample } from "./gestures.ts";
+import { isTap, isTwoFingerTap, TapCounter, wheelDirection, type PinchSample, type PointerSample } from "./gestures.ts";
 
 /**
  * 지도 캔버스 그리기와 확대·이동 입력 (휠·버튼·키보드·끌기·두 손가락).
@@ -30,6 +30,8 @@ export interface ViewportHooks {
   pointerLeave(): void;
   /** 편집 모드가 아닐 때 끌지 않고 누른 지도 좌표 (터치에는 마우스 올리기가 없으므로 셀 정보를 여기서 보여 준다). */
   tap?(x: number, y: number): void;
+  /** 편집 중 Shift+휠: 브러시 크기를 한 칸 키우거나(+1) 줄인다(-1). 처리했으면 true (지도는 확대하지 않는다). */
+  brushWheel?(dir: number): boolean;
 }
 
 /** 확대·축소 버튼 한 번의 배율 */
@@ -459,6 +461,12 @@ export class Viewport {
 
   private onWheel(e: WheelEvent): void {
     if (!this.hooks.scene()) return;
+    if (e.shiftKey && this.hooks.editMode() && this.hooks.brushWheel?.(wheelDirection(e))) {
+      e.preventDefault();
+      this.hoverPx = this.canvasPx(e);
+      this.hooks.viewChanged(...toMap(this.currentView, ...this.hoverPx));
+      return;
+    }
     const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
     const factor = Math.exp(-e.deltaY * unit * 0.0015);
     const s = this.currentView.scale;
@@ -514,6 +522,12 @@ export class Viewport {
       this.hooks.pointerLeave();
     });
     c.addEventListener("contextmenu", (e) => e.preventDefault()); // 오른쪽 버튼 끌기로 이동
+    // 편집 모드가 아닐 때 더블클릭: 그 자리를 2배 확대 (Shift: 축소)
+    c.addEventListener("dblclick", (e) => {
+      if (this.hooks.editMode() || !this.hooks.scene()) return;
+      e.preventDefault();
+      this.zoomAtClient(e.clientX, e.clientY, e.shiftKey ? 0.5 : 2);
+    });
     c.addEventListener("wheel", (e) => this.onWheel(e), { passive: false });
     this.controls.zoomIn.addEventListener("click", () => this.zoomBy(ZOOM_STEP));
     this.controls.zoomOut.addEventListener("click", () => this.zoomBy(1 / ZOOM_STEP));

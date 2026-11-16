@@ -29,6 +29,7 @@ import {
   type ResourceTool,
 } from "./ui/tool-hints.ts";
 import { Viewport } from "./ui/viewport.ts";
+import { stepValue } from "./ui/gestures.ts";
 import { worldPlaces, PLACE_CATEGORIES, type WorldPlace } from "./places.ts";
 import { createPlaceSearch } from "./ui/place-search.ts";
 import {
@@ -121,6 +122,13 @@ const viewport = new Viewport(canvas, $<HTMLCanvasElement>("overlay"), {
   },
   // 터치에는 마우스 올리기가 없으므로 누른 곳의 셀 정보를 보여 준다.
   tap: (x, y) => showCellInfo(x, y),
+  // 브러시를 쓰는 편집(지형·국경)에서만 Shift+휠로 크기를 바꾼다.
+  brushWheel: (dir) => {
+    if (editTarget !== "terrain" && editTarget !== "border") return false;
+    const next = stepValue(Number(brushSize.value), dir, Number(brushSize.min), Number(brushSize.max), Number(brushSize.step));
+    if (String(next) !== brushSize.value) { brushSize.value = String(next); syncBrush(); }
+    return true;
+  },
 });
 
 const placeSearch = createPlaceSearch<WorldPlace>(PLACE_CATEGORIES, (place) => {

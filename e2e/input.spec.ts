@@ -41,3 +41,43 @@ test.describe("터치", () => {
     await ctx.close();
   });
 });
+
+test.describe("마우스", () => {
+  test("편집 모드가 아닐 때 더블클릭은 그 자리 확대, Shift+더블클릭은 축소", async ({ page }) => {
+    const errors = collectErrors(page);
+    await openApp(page);
+    const [x, y] = await mapToScreen(page, 300, 200);
+    await page.mouse.dblclick(x, y);
+    await expect(page.locator("#zoomLevel")).toHaveText("200%");
+    const [x2, y2] = await mapToScreen(page, 300, 200);
+    expect(Math.abs(x2 - x)).toBeLessThan(3);
+    expect(Math.abs(y2 - y)).toBeLessThan(3);
+    await page.keyboard.down("Shift");
+    await page.mouse.dblclick(x, y);
+    await page.keyboard.up("Shift");
+    await expect(page.locator("#zoomLevel")).toHaveText("100%");
+    // 편집 중에는 확대하지 않는다
+    await page.keyboard.press("e");
+    await page.check('input[name="tool"][value="smooth"]');
+    await page.mouse.dblclick(x, y);
+    await expect(page.locator("#zoomLevel")).toHaveText("100%");
+    expect(errors).toEqual([]);
+  });
+
+  test("편집 중 Shift+휠은 브러시 크기를 바꾸고 지도는 확대하지 않는다", async ({ page }) => {
+    await openApp(page);
+    await page.keyboard.press("e");
+    const [x, y] = await mapToScreen(page, 600, 400);
+    await page.mouse.move(x, y);
+    await expect(page.locator("#brushSize")).toHaveValue("45");
+    await page.keyboard.down("Shift");
+    await page.mouse.wheel(0, -100);
+    await page.mouse.wheel(0, -100);
+    await page.keyboard.up("Shift");
+    await expect(page.locator("#brushSize")).toHaveValue("55");
+    await expect(page.locator("#brushSizeOut")).toHaveText("55px");
+    await expect(page.locator("#zoomLevel")).toHaveText("100%");
+    await page.mouse.wheel(0, -100); // Shift 없이는 그대로 확대
+    await expect(page.locator("#zoomLevel")).not.toHaveText("100%");
+  });
+});
