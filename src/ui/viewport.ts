@@ -2,6 +2,7 @@ import { renderWorld, type Layers, type RenderCache } from "../render.ts";
 import { anchoredView, clampView, identityView, MAX_SCALE, MIN_SCALE, sameView, toMap, zoomAt, type View } from "../view.ts";
 import type { WorldMap } from "../world.ts";
 import { isTypingTarget } from "./dom.ts";
+import { isTap, isTwoFingerTap, TapCounter, type PinchSample, type PointerSample } from "./gestures.ts";
 
 /**
  * 지도 캔버스 그리기와 확대·이동 입력 (휠·버튼·키보드·끌기·두 손가락).
@@ -27,6 +28,8 @@ export interface ViewportHooks {
   viewChanged(x?: number, y?: number): void;
   /** 포인터가 지도를 벗어났다. */
   pointerLeave(): void;
+  /** 편집 모드가 아닐 때 끌지 않고 누른 지도 좌표 (터치에는 마우스 올리기가 없으므로 셀 정보를 여기서 보여 준다). */
+  tap?(x: number, y: number): void;
 }
 
 /** 확대·축소 버튼 한 번의 배율 */
@@ -74,8 +77,14 @@ export class Viewport {
 
   // 누르고 있는 포인터 (보기 좌표). 두 개가 되면 두 손가락 확대·이동.
   private readonly pointers = new Map<number, [number, number]>();
-  private pan: { id: number; last: [number, number] } | null = null;
+  private pan: { id: number; last: [number, number]; start: PointerSample } | null = null;
   private pinch: { mx: number; my: number; dist: number; scale: number } | null = null;
+  /** 누른 손가락의 화면(CSS) 좌표: 두 손가락 누르기 판정용 */
+  private readonly touchPts = new Map<number, [number, number]>();
+  /** 두 손가락 누르기 후보: 두 번째 손가락이 닿은 때의 가운데·거리. 움직이면 지운다. */
+  private twoFingerStart: PinchSample | undefined;
+  /** 손가락으로 두 번 누르기 (확대) */
+  private readonly taps = new TapCounter();
   /** 두 손가락 제스처 뒤 남은 손가락으로는 편집하지 않는다 (모두 뗄 때까지). */
   private gestureLock = false;
   private spaceHeld = false;
@@ -345,7 +354,9 @@ export class Viewport {
   private onPointerDown(e: PointerEvent): void {
     this.clearFocus();
     this.pointers.set(e.pointerId, this.canvasPx(e));
+    this.touchPts.set(e.pointerId, [e.clientX, e.clientY]);
     if (this.pointers.size === 2) {
+      this.twoFingerStart = this.pinchSample(e.timeStamp);
       e.preventDefault();
       this.hooks.editCancel();
       this.pan = null;
@@ -362,7 +373,7 @@ export class Viewport {
     const wantsPan = e.button === 1 || e.button === 2 || (e.button === 0 && (!this.hooks.editMode() || this.spaceHeld));
     if (wantsPan) {
       e.preventDefault();
-      this.pan = { id: e.pointerId, last: this.canvasPx(e) };
+      this.pan = { id: e.pointerId, last: this.canvasPx(e), start: { x: e.clientX, y: e.clientY, t: e.timeStamp } };
       this.wrap.classList.add("panning");
       this.capturePointer(e.pointerId);
       return;
@@ -373,6 +384,10 @@ export class Viewport {
   private onPointerMove(e: PointerEvent): void {
     const px = this.canvasPx(e);
     if (this.pointers.has(e.pointerId)) this.pointers.set(e.pointerId, px);
+    if (this.touchPts.has(e.pointerId)) this.touchPts.set(e.pointerId, [e.clientX, e.clientY]);
+    if (this.twoFingerStart && this.touchPts.size === 2 && !isTwoFingerTap(this.twoFingerStart, this.pinchSample(this.twoFingerStart.t))) {
+      this.twoFingerStart = undefined;
+    }
     if (this.pinch) {
       if (this.pointers.size >= 2) {
         const { mid, dist } = this.pinchPoints();
@@ -396,19 +411,50 @@ export class Viewport {
 
   private onPointerEnd(e: PointerEvent): void {
     this.pointers.delete(e.pointerId);
+    this.touchPts.delete(e.pointerId);
     if (this.pinch || this.gestureLock) {
       if (this.pointers.size < 2) this.pinch = null;
-      if (this.pointers.size === 0) this.gestureLock = false;
+      if (this.pointers.size === 0) {
+        this.gestureLock = false;
+        // 두 손가락으로 짧게 눌렀다 떼면 한 단계 축소 (지도 앱과 같은 동작)
+        const start = this.twoFingerStart;
+        this.twoFingerStart = undefined;
+        if (start && e.type === "pointerup" && isTwoFingerTap(start, { ...start, t: e.timeStamp })) this.zoomAtClient(start.x, start.y, 1 / ZOOM_STEP);
+      }
       return;
     }
     if (this.pan) {
       if (e.pointerId === this.pan.id) {
+        const start = this.pan.start;
         this.pan = null;
         this.wrap.classList.remove("panning");
+        if (e.type === "pointerup" && isTap(start, { x: e.clientX, y: e.clientY, t: e.timeStamp })) this.onTap(e);
       }
       return;
     }
     this.hooks.editEnd(e);
+  }
+
+  /** 두 손가락의 화면 좌표 가운데·거리 */
+  private pinchSample(t: number): PinchSample {
+    const [a, b] = [...this.touchPts.values()];
+    if (!a || !b) return { x: 0, y: 0, d: 0, t };
+    return { x: (a[0] + b[0]) / 2, y: (a[1] + b[1]) / 2, d: Math.hypot(a[0] - b[0], a[1] - b[1]), t };
+  }
+
+  /** 화면 좌표 아래 지도 점을 고정한 채 factor배 */
+  private zoomAtClient(clientX: number, clientY: number, factor: number): void {
+    const [px, py] = this.canvasPx({ clientX, clientY });
+    this.setView(zoomAt(this.currentView, factor, px, py, this.width, this.height));
+  }
+
+  /** 편집 모드가 아닐 때의 누르기: 셀 정보를 보여 주고, 손가락으로 두 번 누르면 그 자리를 확대한다. */
+  private onTap(e: PointerEvent): void {
+    if (!this.hooks.scene()) return;
+    const [x, y] = this.toMapCoords(e);
+    this.hooks.tap?.(x, y);
+    if (e.pointerType === "mouse") return; // 마우스는 더블클릭으로 확대한다
+    if (this.taps.add({ x: e.clientX, y: e.clientY, t: e.timeStamp }) === "double") this.zoomAtClient(e.clientX, e.clientY, 2);
   }
 
   private onWheel(e: WheelEvent): void {

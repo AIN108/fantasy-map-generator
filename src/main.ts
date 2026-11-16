@@ -119,6 +119,8 @@ const viewport = new Viewport(canvas, $<HTMLCanvasElement>("overlay"), {
   pointerLeave: () => {
     if (!painting && draggingCity < 0 && routeStart < 0 && !draggingPoint && !draggingSpan) viewport.clearOverlay();
   },
+  // 터치에는 마우스 올리기가 없으므로 누른 곳의 셀 정보를 보여 준다.
+  tap: (x, y) => showCellInfo(x, y),
 });
 
 const placeSearch = createPlaceSearch<WorldPlace>(PLACE_CATEGORIES, (place) => {
