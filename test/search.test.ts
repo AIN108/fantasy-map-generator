@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { worldPlaces } from "../src/places.ts";
+import { RESOURCE_CATEGORY_KO, RESOURCE_INFO } from "../src/resources.ts";
 import { searchPlaces, type SearchPlace } from "../src/search.ts";
 import { generateWorld } from "../src/world.ts";
 
@@ -43,6 +44,32 @@ test("이름 없는 항구·시설도 종류로 찾는다", () => {
   const places = worldPlaces(changed);
   assert.equal(searchPlaces(places, "항구", "port")[0].cell, cell);
   assert.equal(searchPlaces(places, "성", "facility")[0].cell, cell);
+});
+
+test("천연자원을 이름·분류로 찾고, 전략 자원은 매장량과 소속을 보여 준다", () => {
+  assert.ok(world.resources.length > 0, "시험 지도에 자원이 있어야 한다");
+  const places = worldPlaces(world);
+  const res = places.filter((p) => p.category === "resource");
+  assert.equal(res.length, world.resources.length);
+  world.resources.forEach((r, i) => {
+    const p = res.find((x) => x.key === `resource:${i}`)!;
+    assert.equal(p.cell, r.cell);
+    assert.equal(p.name, RESOURCE_INFO[r.kind].ko);
+    assert.match(p.detail, new RegExp(`^${RESOURCE_CATEGORY_KO[RESOURCE_INFO[r.kind].category]}`));
+    assert.equal(p.detail.includes(`매장량 ${r.amount}`), r.amount !== undefined);
+  });
+  const kind = world.resources[0].kind;
+  const byName = searchPlaces(places, RESOURCE_INFO[kind].ko, "resource");
+  assert.deepEqual(byName.map((p) => p.cell).sort(), world.resources.filter((r) => r.kind === kind).map((r) => r.cell).sort());
+  const strategic = searchPlaces(places, "전략 자원", "resource");
+  assert.equal(strategic.length, world.resources.filter((r) => RESOURCE_INFO[r.kind].category === "strategic").length);
+});
+
+test("직접 놓은 자원(편집 반영 후 world.resources)도 검색된다", () => {
+  const cell = world.cities[0].cell;
+  const changed = { ...world, resources: [...world.resources, { cell, kind: "gold" as const }] };
+  const found = searchPlaces(worldPlaces(changed), "금", "resource");
+  assert.ok(found.some((p) => p.cell === cell));
 });
 
 test("한글 조합·전각 영문·대소문자·공백 차이를 처리하고 이름 일치를 우선한다", () => {
