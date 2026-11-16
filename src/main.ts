@@ -32,7 +32,7 @@ import { Viewport } from "./ui/viewport.ts";
 import { worldPlaces, PLACE_CATEGORIES, type WorldPlace } from "./places.ts";
 import { createPlaceSearch } from "./ui/place-search.ts";
 import {
-  applyInfra, applyResources, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors, parseMapJSON,
+  applyInfra, applyResources, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors, parseMapJSONText,
   natureKey, natureOf, terrainKey, toJSON, validateOptions, type NameAnchors, type Nature, type WorldMap, type WorldOptions,
 } from "./world.ts";
 
@@ -1172,7 +1172,12 @@ const MAX_IMPORT_BYTES = 20 * 1024 * 1024;
 
 async function importFile(file: File): Promise<void> {
   if (file.size > MAX_IMPORT_BYTES) throw new Error("파일이 너무 큽니다 (20MB 이하만 불러올 수 있습니다).");
-  const parsed = parseMapJSON(JSON.parse(await file.text()));
+  const parsed = parseMapJSONText(await file.text());
+  // 아래에서 편집 상태를 비우므로 generate()의 확인이 뜨지 않는다. 비우기 전에 여기서 묻는다.
+  if (hasEdits() && !confirm(`${file.name}${eul(file.name)} 불러오면 지금 편집한 지형·도시·국경·시설·자원이 사라집니다. 계속할까요?\n(필요하면 먼저 'JSON 저장'으로 보관하세요.)`)) {
+    setStatus("불러오기를 취소했습니다.");
+    return;
+  }
   fillForm(parsed.options);
   mesh = parsed.mesh;
   currentMeshKey = meshKey(parsed.options);

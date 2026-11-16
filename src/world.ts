@@ -614,6 +614,17 @@ export function parseMapJSON(
   return { options, elevation, mesh, anchors, civ, infra, resources };
 }
 
+/** 불러온 파일의 글을 읽는다. JSON이 아니면 한국어로 알린다. */
+export function parseMapJSONText(text: string): ReturnType<typeof parseMapJSON> {
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error("지도 파일을 읽을 수 없습니다: JSON 형식이 아니거나 일부가 잘렸습니다.");
+  }
+  return parseMapJSON(data);
+}
+
 /**
  * 최신 이름 정보 앞에 두고 이전 기억을 덧붙인다. (이름, 위치)가 같은 항목만 합쳐서,
  * 편집 중 옮겨 간 이름도 원래 위치 기록을 잃지 않게 한다. 그래야 되돌렸을 때 원래 자리가 원래 이름을 찾는다.
