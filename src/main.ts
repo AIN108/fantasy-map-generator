@@ -20,7 +20,7 @@ import {
 } from "./render.ts";
 import { fillForm, formatHash, formatters, hashTarget, parseHash, RANGE_FIELDS, readForm } from "./ui/options.ts";
 import { loadSavedEdits, saveEdits as saveEdits_, type KeyValueStore } from "./ui/storage.ts";
-import { editShortcut, isTypingTarget } from "./ui/dom.ts";
+import { $, editShortcut, isTypingTarget } from "./ui/dom.ts";
 import { renderResourceLegend } from "./ui/resource-legend.ts";
 import { eul } from "./ui/text.ts";
 import { PreviewClient, type WorkerLike } from "./ui/preview-client.ts";
@@ -29,19 +29,14 @@ import { Viewport } from "./ui/viewport.ts";
 import { stepValue } from "./ui/gestures.ts";
 import { worldPlaces, PLACE_CATEGORIES, type WorldPlace } from "./places.ts";
 import { createPlaceSearch } from "./ui/place-search.ts";
+import { createExportPanel } from "./ui/export-panel.ts";
 import { renderCellInfo, renderMergeOptions, renderResourceKindOptions, renderStateLegend, renderStateOptions } from "./ui/panels.ts";
 import {
-  applyInfra, applyResources, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors, parseMapJSONText,
-  natureKey, natureOf, terrainKey, toJSON, validateOptions, type NameAnchors, type Nature, type WorldMap, type WorldOptions,
+  applyInfra, applyResources, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors,
+  natureKey, natureOf, terrainKey, validateOptions, type NameAnchors, type Nature, type WorldMap, type WorldOptions,
 } from "./world.ts";
-import { canShare, decodeShare, encodeShare, MAX_SHARE_CHARS, type SharedMap } from "./share.ts";
+import { decodeShare, type SharedMap } from "./share.ts";
 import { STORAGE_KEY } from "./ui/storage.ts";
-
-const $ = <T extends HTMLElement>(id: string): T => {
-  const el = document.getElementById(id);
-  if (!el) throw new Error(`#${id} 요소가 없습니다.`);
-  return el as T;
-};
 
 const canvas = $<HTMLCanvasElement>("map");
 const form = $<HTMLFormElement>("controls");
@@ -1106,18 +1101,6 @@ function redo(): void {
 }
 
 // ── 내보내기·불러오기 ───────────────────────────────────────────────
-function download(name: string, blob: Blob): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-const safeFileName = (s: string): string => s.replace(/[^\p{L}\p{N}_-]+/gu, "_").slice(0, 40) || "map";
-const MAX_IMPORT_BYTES = 20 * 1024 * 1024;
-
 /** 파일·링크에서 읽어 검증한 지도로 바꾼다 (지금 편집은 버린다). 만들었으면 true, 못 만들었으면 generate가 상태 줄에 알린다. */
 function openLoadedMap(map: SharedMap): boolean {
   fillForm(map.options);
@@ -1136,22 +1119,6 @@ function openLoadedMap(map: SharedMap): boolean {
     resources: map.resources,
   });
   return options === map.options;
-}
-
-async function importFile(file: File): Promise<void> {
-  if (file.size > MAX_IMPORT_BYTES) throw new Error("파일이 너무 큽니다 (20MB 이하만 불러올 수 있습니다).");
-  const parsed = parseMapJSONText(await file.text());
-  // 아래에서 편집 상태를 비우므로 generate()의 확인이 뜨지 않는다. 비우기 전에 여기서 묻는다.
-  if (hasEdits() && !confirm(`${file.name}${eul(file.name)} 불러오면 지금 편집한 지형·도시·국경·시설·자원이 사라집니다. 계속할까요?\n(필요하면 먼저 'JSON 저장'으로 보관하세요.)`)) {
-    setStatus("불러오기를 취소했습니다.");
-    return;
-  }
-  openLoadedMap(parsed);
-  const extras = [
-    edited ? "편집된 지형" : "", civ ? "직접 편집한 도시·국경" : "", isEmptyInfra(infra) ? "" : "도로·철도·시설",
-    isEmptyResourceEdits(resourceEdits) ? "" : "직접 편집한 자원",
-  ].filter(Boolean).join(", ");
-  setStatus(`${file.name}${eul(file.name)} 불러왔습니다.${extras ? ` (${extras} 포함)` : ""}`);
 }
 
 // ── 이벤트 연결 ─────────────────────────────────────────────────────
@@ -1315,53 +1282,18 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-$("exportPng").addEventListener("click", () => {
-  if (!world) return;
-  // 확대해서 보고 있어도 지도 전체를 원래 크기로 저장한다.
-  viewport.exportCanvas().toBlob((blob) => blob && download(`${safeFileName(options.seed)}.png`, blob), "image/png");
-});
-$("exportJson").addEventListener("click", () => {
-  if (!world) return;
-  const suffix = hasEdits() ? "_편집" : "";
-  download(`${safeFileName(options.seed)}${suffix}.json`, new Blob([JSON.stringify(toJSON(world, civ, infra, resourceEdits))], { type: "application/json" }));
-});
-$("importJson").addEventListener("click", () => $<HTMLInputElement>("importFile").click());
-$<HTMLInputElement>("importFile").addEventListener("change", (e) => {
-  const input = e.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = "";
-  if (file) importFile(file).catch((err) => setStatus(err instanceof Error ? err.message : String(err), true));
-});
-$("copyLink").addEventListener("click", async () => {
-  let link = location.href;
-  let note = "현재 지도 링크를 복사했습니다.";
-  if (hasEdits() && world && baseElevation) {
-    // 편집한 지도는 바뀐 고도·지명·문명·시설·자원을 줄여 링크 끝(&e=…)에 담는다.
-    if (!canShare()) {
-      note = "링크를 복사했습니다. 이 브라우저는 편집 내용을 링크에 담을 수 없으니 함께 보내려면 'JSON 저장'을 쓰세요.";
-    } else {
-      let data: string;
-      try {
-        data = await encodeShare(world, baseElevation, civ, infra, resourceEdits);
-      } catch (err) {
-        setStatus(`편집한 지도를 링크로 만들지 못했습니다 (${err instanceof Error ? err.message : String(err)}). 'JSON 저장'을 쓰세요.`, true);
-        return;
-      }
-      if (data.length > MAX_SHARE_CHARS) {
-        note = `편집 내용이 너무 많아(${data.length.toLocaleString("ko-KR")}자) 링크에 담지 못하고 옵션만 담았습니다. 함께 보내려면 'JSON 저장'을 쓰세요.`;
-      } else {
-        link = `${location.href.split("#")[0]}${formatHash(options)}&e=${data}`;
-        note = `편집한 지형·지명·도시·국경·시설·자원까지 담은 링크를 복사했습니다 (${link.length.toLocaleString("ko-KR")}자).`
-          + (link.length > 8000 ? " 일부 메신저에서는 긴 링크가 잘릴 수 있습니다." : "");
-      }
-    }
-  }
-  try {
-    await navigator.clipboard.writeText(link);
-    setStatus(note);
-  } catch {
-    setStatus("클립보드에 접근할 수 없습니다. 주소창의 링크를 직접 복사하세요.", true);
-  }
+createExportPanel({
+  world: () => world,
+  options: () => options,
+  baseElevation: () => baseElevation,
+  civ: () => civ,
+  infra: () => infra,
+  resourceEdits: () => resourceEdits,
+  edited: () => edited,
+  hasEdits,
+  exportCanvas: () => viewport.exportCanvas(),
+  openLoadedMap,
+  status: setStatus,
 });
 
 /** 링크에 담긴 편집 지도를 연다 (JSON 파일을 불러올 때와 같은 방식). 열었으면 true. */
