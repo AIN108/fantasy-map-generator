@@ -9,3 +9,20 @@ export function isTypingTarget(target: EventTarget | null): boolean {
   const type = (target as HTMLInputElement).type;
   return type === "text" || type === "number" || type === "search";
 }
+
+export type EditShortcut = "undo" | "redo" | "toggleEdit";
+
+/**
+ * 편집 단축키 (Ctrl/⌘+Z 되돌리기, Ctrl/⌘+Shift+Z·Ctrl/⌘+Y 다시 하기, E 편집 모드).
+ * 목록(select)에 포커스가 있으면 E는 목록의 글자 찾기에 쓰이므로 편집 모드를 바꾸지 않는다 (확대 키와 같은 기준).
+ */
+export function editShortcut(
+  e: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "shiftKey">, onSelect: boolean,
+): EditShortcut | undefined {
+  const mod = e.ctrlKey || e.metaKey;
+  const key = e.key.toLowerCase();
+  if (mod && key === "z") return e.shiftKey ? "redo" : "undo";
+  if (mod && key === "y") return "redo";
+  if (!mod && key === "e" && !onSelect) return "toggleEdit";
+  return undefined;
+}

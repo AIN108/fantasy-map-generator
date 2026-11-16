@@ -20,7 +20,7 @@ import {
 } from "./render.ts";
 import { fillForm, formatHash, formatters, parseHash, RANGE_FIELDS, readForm } from "./ui/options.ts";
 import { loadSavedEdits, saveEdits as saveEdits_, type KeyValueStore } from "./ui/storage.ts";
-import { isTypingTarget } from "./ui/dom.ts";
+import { editShortcut, isTypingTarget } from "./ui/dom.ts";
 import { renderResourceLegend } from "./ui/resource-legend.ts";
 import { eul } from "./ui/text.ts";
 import { PreviewClient, type WorkerLike } from "./ui/preview-client.ts";
@@ -1324,14 +1324,11 @@ $("renameState").addEventListener("click", () => {
 document.addEventListener("keydown", (e) => {
   const target = e.target as HTMLElement;
   if (isTypingTarget(target)) return;
-  const mod = e.ctrlKey || e.metaKey;
-  if (mod && e.key.toLowerCase() === "z") {
+  const action = editShortcut(e, target?.tagName === "SELECT");
+  if (action === "undo" || action === "redo") {
     e.preventDefault();
-    if (e.shiftKey) redo(); else undo();
-  } else if (mod && e.key.toLowerCase() === "y") {
-    e.preventDefault();
-    redo();
-  } else if (!mod && e.key.toLowerCase() === "e") {
+    if (action === "undo") undo(); else redo();
+  } else if (action === "toggleEdit") {
     setEditMode(!editMode);
   }
 });
