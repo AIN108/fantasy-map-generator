@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { snapshotCiv } from "../src/civedit.ts";
 import { emptyInfra } from "../src/infra.ts";
+import { editShortcut } from "../src/ui/dom.ts";
 import { formatHash, parseHash } from "../src/ui/options.ts";
 import { loadSavedEdits, saveEdits, STORAGE_KEY, type KeyValueStore } from "../src/ui/storage.ts";
 import { eul } from "../src/ui/text.ts";
@@ -18,6 +19,27 @@ describe("목적격 조사", () => {
     assert.equal(eul("Westmarch"), "을(를)");
     assert.equal(eul("map.json"), "을(를)");
     assert.equal(eul(""), "을(를)");
+  });
+});
+
+describe("편집 단축키", () => {
+  const key = (k: string, mods: { ctrl?: boolean; meta?: boolean; shift?: boolean } = {}) =>
+    ({ key: k, ctrlKey: !!mods.ctrl, metaKey: !!mods.meta, shiftKey: !!mods.shift });
+  test("Ctrl/⌘+Z 되돌리기, Shift를 더하거나 Ctrl/⌘+Y면 다시 하기 (목록 포커스와 상관없이)", () => {
+    for (const onSelect of [false, true]) {
+      assert.equal(editShortcut(key("z", { ctrl: true }), onSelect), "undo");
+      assert.equal(editShortcut(key("Z", { meta: true, shift: true }), onSelect), "redo");
+      assert.equal(editShortcut(key("y", { ctrl: true }), onSelect), "redo");
+    }
+  });
+  test("E는 편집 모드를 바꾸되, 목록(select)에 포커스가 있으면 바꾸지 않는다", () => {
+    assert.equal(editShortcut(key("e"), false), "toggleEdit");
+    assert.equal(editShortcut(key("E", { shift: true }), false), "toggleEdit");
+    assert.equal(editShortcut(key("e"), true), undefined);
+    assert.equal(editShortcut(key("e", { ctrl: true }), false), undefined);
+  });
+  test("다른 키는 단축키가 아니다", () => {
+    for (const k of ["z", "y", "a", "Enter", " "]) assert.equal(editShortcut(key(k), false), undefined);
   });
 });
 
