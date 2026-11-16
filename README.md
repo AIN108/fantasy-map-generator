@@ -24,6 +24,8 @@ npm run build      # dist/ 정적 빌드
 npm run test:e2e   # 브라우저 E2E (Playwright, 빌드 후 실행)
 ```
 
+한글 글꼴(Noto Sans KR·Noto Serif KR, SIL Open Font License 1.1)은 `src/fonts/`에 들어 있어 외부 글꼴 서버 없이 동작합니다. 출처·라이선스는 `src/fonts/README.md`·`src/fonts/OFL.txt`에 있습니다.
+
 E2E는 빌드된 `dist/`를 `vite preview`로 띄워 실제 브라우저에서 검사합니다.
 
 - 기능: 지도 생성·JSON 왕복, 지형/도시/국경 편집과 되돌리기, 도로·철도·항로·항구·시설물·다리·터널(용도 규칙 포함), 확대 중 배치 정확도·핀치 취소, 화면 폭별 확대 버튼 위치, 휴대폰 터치.
