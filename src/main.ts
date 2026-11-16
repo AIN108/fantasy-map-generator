@@ -1478,6 +1478,18 @@ window.addEventListener("hashchange", () => {
   }
 });
 
+// 글꼴은 유니코드 구간별 파일로 나뉘어, 시작할 때 기다린 구간 밖의 한글 파일은 첫 그리기 뒤에 도착할 수 있다.
+// 캔버스는 저절로 다시 그려지지 않으므로 글꼴 파일이 도착하면 지도를 다시 그린다 (지명 자리도 그때 다시 잰다). 여러 번 도착해도 프레임당 한 번.
+let fontRedrawQueued = false;
+document.fonts?.addEventListener?.("loadingdone", () => {
+  if (fontRedrawQueued) return;
+  fontRedrawQueued = true;
+  requestAnimationFrame(() => {
+    fontRedrawQueued = false;
+    viewport.draw(painting);
+  });
+});
+
 // ── 시작 ─────────────────────────────────────────────────────────────
 const initial: WorldOptions = { ...DEFAULT_OPTIONS, ...parseHash(location.hash) };
 fillForm(initial);
