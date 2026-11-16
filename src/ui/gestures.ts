@@ -51,3 +51,18 @@ export function stepValue(value: number, dir: number, min: number, max: number, 
 
 /** 휠 한 번이 키우는 쪽인가 (위로 굴리면 +1). Shift를 누르면 일부 환경은 deltaX로 보낸다. */
 export const wheelDirection = (e: { deltaX: number; deltaY: number }): number => -Math.sign(e.deltaY || e.deltaX);
+
+/** 방향키 한 번에 옮기는 양: 보이는 폭·높이의 비율 (Shift를 누르면 크게) */
+export const ARROW_PAN = 0.15, ARROW_PAN_BIG = 0.5;
+
+/** 방향키 → 보는 쪽 [x, y] 비율 (ArrowRight면 동쪽을 더 보이게 [+0.15, 0]). 방향키가 아니면 undefined */
+export function arrowPan(key: string, big: boolean): [number, number] | undefined {
+  const k = big ? ARROW_PAN_BIG : ARROW_PAN;
+  switch (key) {
+    case "ArrowLeft": return [-k, 0];
+    case "ArrowRight": return [k, 0];
+    case "ArrowUp": return [0, -k];
+    case "ArrowDown": return [0, k];
+    default: return undefined;
+  }
+}

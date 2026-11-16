@@ -215,6 +215,7 @@
           <button type="button" id="copyLink">링크 복사</button>
           <button type="button" id="importJson">JSON 불러오기</button>
           <input type="file" id="importFile" accept="application/json,.json" hidden />
+          <button type="button" id="shortcutHelpOpen" title="단축키 목록 (?)">단축키</button>
         </div>
 
         <section class="info" aria-live="polite">
@@ -249,6 +250,23 @@
         <section class="resource-legend" id="resourceLegend" aria-label="자원 범례"></section>
       </main>
     </div>
+    <dialog id="shortcutHelp" class="shortcut-help" aria-labelledby="shortcutHelpTitle">
+      <h2 id="shortcutHelpTitle">단축키</h2>
+      <dl>
+        <dt><kbd>+</kbd> <kbd>-</kbd> <kbd>0</kbd></dt><dd>확대 · 축소 · 전체 보기</dd>
+        <dt><kbd>←</kbd> <kbd>↑</kbd> <kbd>→</kbd> <kbd>↓</kbd></dt><dd>확대한 지도 옮기기 (<kbd>Shift</kbd>: 크게)</dd>
+        <dt>휠 · 더블클릭</dt><dd>커서 자리 확대·축소 (더블클릭에 <kbd>Shift</kbd>: 축소, 편집 모드가 아닐 때)</dd>
+        <dt>끌기 · 가운데·오른쪽 버튼</dt><dd>지도 옮기기 (편집 중에는 <kbd>Space</kbd>를 누른 채 끌기)</dd>
+        <dt>두 번 누르기 · 두 손가락 누르기</dt><dd>터치 화면에서 확대 · 축소</dd>
+        <dt><kbd>/</kbd></dt><dd>장소 찾기</dd>
+        <dt><kbd>E</kbd></dt><dd>편집 모드 켜고 끄기</dd>
+        <dt><kbd>Ctrl</kbd>+<kbd>Z</kbd> · <kbd>Ctrl</kbd>+<kbd>Y</kbd></dt><dd>되돌리기 · 다시 하기 (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd>도 다시 하기)</dd>
+        <dt><kbd>[</kbd> <kbd>]</kbd> · <kbd>Shift</kbd>+휠</dt><dd>브러시 크기 (지형·국경 편집 중)</dd>
+        <dt><kbd>1</kbd>~<kbd>4</kbd></dt><dd>지형 도구: 융기 · 침강 · 평탄화 · 부드럽게 (지형 편집 중)</dd>
+        <dt><kbd>?</kbd></dt><dd>이 목록</dd>
+      </dl>
+      <button type="button" id="shortcutHelpClose">닫기</button>
+    </dialog>
     <script type="module" src="./src/main.ts"></script>
   </body>
 </html>

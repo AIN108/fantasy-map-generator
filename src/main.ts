@@ -1309,6 +1309,34 @@ const syncBrush = (): void => {
 };
 brushSize.addEventListener("input", syncBrush);
 brushStrength.addEventListener("input", syncBrush);
+
+// 편집 편의 단축키: [ ] 브러시 크기, 1~4 지형 도구, ? 단축키 목록 (글자 칸·목록에서는 쓰지 않는다)
+const TERRAIN_KEYS: BrushTool[] = ["raise", "lower", "flatten", "smooth"];
+document.addEventListener("keydown", (e) => {
+  const target = e.target as HTMLElement;
+  if (isTypingTarget(target) || target?.tagName === "SELECT" || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === "?") {
+    e.preventDefault();
+    const help = $<HTMLDialogElement>("shortcutHelp");
+    if (!help.open) help.showModal();
+    return;
+  }
+  if (!editMode) return;
+  if ((e.key === "[" || e.key === "]") && (editTarget === "terrain" || editTarget === "border")) {
+    e.preventDefault();
+    brushSize.value = String(stepValue(Number(brushSize.value), e.key === "]" ? 1 : -1, Number(brushSize.min), Number(brushSize.max), Number(brushSize.step)));
+    syncBrush();
+    return;
+  }
+  const n = TERRAIN_KEYS[Number(e.key) - 1];
+  if (editTarget === "terrain" && /^[1-4]$/.test(e.key) && n) {
+    e.preventDefault();
+    setTool(n);
+    setStatus(`지형 도구: ${BRUSH_TOOLS[n].ko}`);
+  }
+});
+$("shortcutHelpOpen").addEventListener("click", () => $<HTMLDialogElement>("shortcutHelp").showModal());
+$("shortcutHelpClose").addEventListener("click", () => $<HTMLDialogElement>("shortcutHelp").close());
 $("undo").addEventListener("click", undo);
 $("redo").addEventListener("click", redo);
 $("resetEdits").addEventListener("click", () => {

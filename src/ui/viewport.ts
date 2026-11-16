@@ -1,8 +1,8 @@
 import { renderWorld, type Layers, type RenderCache } from "../render.ts";
-import { anchoredView, clampView, identityView, MAX_SCALE, MIN_SCALE, sameView, toMap, zoomAt, type View } from "../view.ts";
+import { anchoredView, clampView, identityView, MAX_SCALE, MIN_SCALE, panBy, sameView, toMap, zoomAt, type View } from "../view.ts";
 import type { WorldMap } from "../world.ts";
 import { isTypingTarget } from "./dom.ts";
-import { isTap, isTwoFingerTap, TapCounter, wheelDirection, type PinchSample, type PointerSample } from "./gestures.ts";
+import { arrowPan, isTap, isTwoFingerTap, TapCounter, wheelDirection, type PinchSample, type PointerSample } from "./gestures.ts";
 
 /**
  * 지도 캔버스 그리기와 확대·이동 입력 (휠·버튼·키보드·끌기·두 손가락).
@@ -491,6 +491,16 @@ export class Viewport {
     if (e.key === "+" || e.key === "=") { e.preventDefault(); this.zoomBy(ZOOM_STEP); return true; }
     if (e.key === "-" || e.key === "_") { e.preventDefault(); this.zoomBy(1 / ZOOM_STEP); return true; }
     if (e.key === "0") { e.preventDefault(); this.resetView(); return true; }
+    // 방향키: 확대해서 보고 있을 때 지도를 옮긴다 (Shift: 크게). 지도·확대 버튼에 포커스가 있거나 아무 데도 없을 때만:
+    // 목록·라디오·슬라이더·검색 결과는 방향키를 스스로 쓴다.
+    const move = arrowPan(e.key, e.shiftKey);
+    const onMap = target === document.body || target === document.documentElement || !!target.closest?.(".map-wrap");
+    if (move && onMap && this.currentView.scale > MIN_SCALE + 1e-6) {
+      e.preventDefault();
+      const v = this.currentView;
+      this.setView(panBy(v, -move[0] * this.width, -move[1] * this.height, this.width, this.height));
+      return true;
+    }
     return false;
   }
 

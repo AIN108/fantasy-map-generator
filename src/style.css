@@ -227,3 +227,11 @@ button:disabled:hover { border-color: var(--line); }
   .zoom-controls button { width: 44px; height: 36px; box-shadow: none; }
   .zoom-controls span { order: -1; margin-right: auto; background: transparent; padding: 0; font-size: 12px; color: var(--muted); }
 }
+
+/* 단축키 목록 */
+.shortcut-help { max-width: min(560px, calc(100vw - 32px)); border: 1px solid var(--line); border-radius: 8px; padding: 16px 20px; background: var(--panel); color: var(--text); }
+.shortcut-help h2 { margin: 0 0 10px; font-size: 16px; }
+.shortcut-help dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0 0 14px; font-size: 13px; }
+.shortcut-help dt { white-space: nowrap; }
+.shortcut-help dd { margin: 0; }
+.shortcut-help kbd { display: inline-block; min-width: 1.4em; padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; font: 12px ui-monospace, Menlo, Consolas, monospace; text-align: center; }
