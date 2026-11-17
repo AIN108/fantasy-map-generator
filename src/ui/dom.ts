@@ -1,3 +1,10 @@
+/** id로 요소를 찾는다. 없으면 바로 알 수 있게 예외를 낸다. */
+export const $ = <T extends HTMLElement>(id: string): T => {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`#${id} 요소가 없습니다.`);
+  return el as T;
+};
+
 /**
  * 글자를 입력하는 중인 요소인지 (단축키를 처리하지 않을 곳).
  * 숫자 입력칸도 포함한다: 매장량에 "0"을 치다가 보기가 맞춤으로 돌아가거나 "e"로 편집 모드가 꺼지면 안 된다.

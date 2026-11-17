@@ -2,9 +2,9 @@ import {
   addCity, cloneCiv, createState, deleteCity, deleteState, ensureCivNames, makeCapital,
   moveCity, paintTerritory, renameCity, renameState, snapshotCiv, type CivState, type EditResult,
 } from "./civedit.ts";
-import { applyBrush, BRUSH_TOOLS, EditHistory, sameElevation, type Brush, type BrushTool } from "./editor.ts";
+import { applyBrush, EditHistory, sameElevation, type Brush, type BrushTool } from "./editor.ts";
 import {
-  addFacility, addPath, addPort, addSeaRoute, addSpan, cloneInfra, toggleSpanMode, hitSpan, MAX_SPAN_LENGTH, moveSpan, spanLinks,
+  addFacility, addPath, addPort, addSeaRoute, addSpan, cloneInfra, toggleSpanMode, hitSpan, moveSpan, spanLinks,
   SPAN_MODE_KO, type SpanMode, type SpanPart, emptyInfra, eraseAt, FACILITY_INFO, hitPoint,
   isEmptyInfra, movePoint, routePath, routeSea, type FacilityKind, type Infra, type PointKind,
 } from "./infra.ts";
@@ -13,37 +13,32 @@ import type { NameStyle } from "./names.ts";
 import type { PreviewInput, PreviewOutput } from "./preview.ts";
 import {
   addResource, cloneResourceEdits, emptyResourceEdits, hitResource, isEmptyResourceEdits, isResourceKind, removeResource,
-  RESOURCE_CATEGORY_KO, RESOURCE_INFO, RESOURCE_KINDS, type ResourceCategory, type ResourceEdits, type ResourceKind,
+  RESOURCE_INFO, type ResourceEdits, type ResourceKind,
 } from "./resources.ts";
 import {
-  buildRenderCache, DEFAULT_LAYERS, describeCell, drawBridgeSpan, drawTunnelSpan, type Layers, type RenderCache,
+  buildRenderCache, DEFAULT_LAYERS, describeCell, type Layers, type RenderCache,
 } from "./render.ts";
 import { fillForm, formatHash, formatters, hashTarget, parseHash, RANGE_FIELDS, readForm } from "./ui/options.ts";
 import { loadSavedEdits, saveEdits as saveEdits_, type KeyValueStore } from "./ui/storage.ts";
-import { editShortcut, isTypingTarget } from "./ui/dom.ts";
+import { $, editShortcut, isTypingTarget } from "./ui/dom.ts";
 import { renderResourceLegend } from "./ui/resource-legend.ts";
 import { eul } from "./ui/text.ts";
 import { PreviewClient, type WorkerLike } from "./ui/preview-client.ts";
-import {
-  BORDER_HINT, CITY_TOOL_HINTS, INFRA_TOOL_HINTS, RESOURCE_TOOL_HINTS, type CityTool, type EditTarget, type InfraTool,
-  type ResourceTool,
-} from "./ui/tool-hints.ts";
+import { toolHintText, type CityTool, type EditTarget, type InfraTool, type ResourceTool } from "./ui/tool-hints.ts";
 import { Viewport } from "./ui/viewport.ts";
 import { stepValue } from "./ui/gestures.ts";
 import { worldPlaces, PLACE_CATEGORIES, type WorldPlace } from "./places.ts";
 import { createPlaceSearch } from "./ui/place-search.ts";
+import { createExportPanel } from "./ui/export-panel.ts";
+import { installShortcutKeys } from "./ui/shortcuts.ts";
+import { drawInfraCursor as drawInfraCursorOn, isSpanTool as isSpanToolOf } from "./ui/infra-cursor.ts";
+import { renderCellInfo, renderMergeOptions, renderResourceKindOptions, renderStateLegend, renderStateOptions } from "./ui/panels.ts";
 import {
-  applyInfra, applyResources, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors, parseMapJSONText,
-  natureKey, natureOf, terrainKey, toJSON, validateOptions, type NameAnchors, type Nature, type WorldMap, type WorldOptions,
+  applyInfra, applyResources, createElevation, createMesh, DEFAULT_OPTIONS, deriveWorld, extractAnchors, meshKey, mergeAnchors,
+  natureKey, natureOf, terrainKey, validateOptions, type NameAnchors, type Nature, type WorldMap, type WorldOptions,
 } from "./world.ts";
-import { canShare, decodeShare, encodeShare, MAX_SHARE_CHARS, type SharedMap } from "./share.ts";
+import { decodeShare, type SharedMap } from "./share.ts";
 import { STORAGE_KEY } from "./ui/storage.ts";
-
-const $ = <T extends HTMLElement>(id: string): T => {
-  const el = document.getElementById(id);
-  if (!el) throw new Error(`#${id} 요소가 없습니다.`);
-  return el as T;
-};
 
 const canvas = $<HTMLCanvasElement>("map");
 const form = $<HTMLFormElement>("controls");
@@ -169,53 +164,15 @@ function setStatus(text: string, isError = false): void {
   statusEl.classList.toggle("error", isError);
 }
 
-function renderLegend(w: WorldMap): void {
-  legendEl.replaceChildren(
-    ...w.states.map((s) => {
-      const item = document.createElement("span");
-      const swatch = document.createElement("i");
-      swatch.style.background = s.color;
-      const capital = w.cities.find((c) => c.cell === s.capitalCell);
-      item.append(swatch, `${s.name} · 수도 ${capital?.name ?? "-"}`);
-      return item;
-    }),
-  );
-}
-
-/** 국경 칠하기에서 고를 국가 목록 (선택은 유지) */
+/** 국경 칠하기에서 고를 국가 목록과 없앨 때 넘겨받을 곳 */
 function renderPaintStates(w: WorldMap): void {
-  const selected = paintStateEl.value;
-  const opts = w.states.map((s) => {
-    const o = document.createElement("option");
-    o.value = String(s.id);
-    o.textContent = s.name;
-    return o;
-  });
-  const none = document.createElement("option");
-  none.value = "-1";
-  none.textContent = "무소속 (지우기)";
-  paintStateEl.replaceChildren(...opts, none);
-  if ([...paintStateEl.options].some((o) => o.value === selected)) paintStateEl.value = selected;
+  renderStateOptions(paintStateEl, w);
   renderMergeTargets();
 }
 
-/** 국가 없애기에서 영토를 넘겨받을 곳: 무소속 + 고른 나라를 뺀 나머지 */
 function renderMergeTargets(): void {
   if (!world) return;
-  const selected = mergeIntoEl.value;
-  const removing = Number(paintStateEl.value);
-  const none = document.createElement("option");
-  none.value = "-1";
-  none.textContent = "무소속";
-  const opts = world.states.filter((s) => s.id !== removing).map((s) => {
-    const o = document.createElement("option");
-    o.value = String(s.id);
-    o.textContent = s.name;
-    return o;
-  });
-  mergeIntoEl.replaceChildren(none, ...opts);
-  if ([...mergeIntoEl.options].some((o) => o.value === selected)) mergeIntoEl.value = selected;
-  $<HTMLButtonElement>("deleteState").disabled = !(removing >= 0 && world.states[removing]);
+  renderMergeOptions(mergeIntoEl, paintStateEl, $<HTMLButtonElement>("deleteState"), world);
 }
 
 function updateEditButtons(): void {
@@ -274,7 +231,7 @@ function derive(natureOnly = false): void {
     viewport.clearFocus();
     viewport.draw(painting); // 칠하는 중이면 빠르게, 손을 뗀 뒤(commit)에는 선명하게
     if (natureOnly) return;
-    renderLegend(world);
+    renderStateLegend(legendEl, world);
     placeSearch.setPlaces(worldPlaces(world));
     renderResourceLegend(resourceLegendEl, world.resources, layers.resources);
     renderPaintStates(world);
@@ -389,21 +346,9 @@ function setEditMode(on: boolean): void {
 }
 
 function updateHint(): void {
-  const hint = editTarget === "terrain"
-    ? BRUSH_TOOLS[brush.tool].hint
-    : editTarget === "city"
-      ? CITY_TOOL_HINTS[cityTool]
-      : editTarget === "infra"
-        ? INFRA_TOOL_HINTS[infraTool]
-        : editTarget === "resource"
-          ? RESOURCE_TOOL_HINTS[resourceTool]
-          : BORDER_HINT;
-  const civNote = (editTarget === "city" || editTarget === "border") && !civ
-    ? " (처음 편집하면 자동 배치를 멈추고 지금 상태를 고정합니다)"
-    : editTarget === "infra" && (infraTool === "road" || infraTool === "erase") && !infra.roads
-      ? " (도로를 처음 편집하면 자동 도로를 지금 상태로 고정합니다)"
-      : "";
-  $("toolHint").textContent = hint + civNote;
+  $("toolHint").textContent = toolHintText({
+    target: editTarget, brushTool: brush.tool, cityTool, infraTool, resourceTool, civEdited: !!civ, roadsFixed: !!infra.roads,
+  });
 }
 
 function setEditTarget(target: EditTarget): void {
@@ -439,23 +384,6 @@ function syncResourceFields(): void {
 function selectedResourceKind(): ResourceKind {
   const v = resourceKindEl.value;
   return isResourceKind(v) ? v : "iron";
-}
-
-/** 자원 종류 목록: 분류별로 묶는다. */
-function fillResourceKinds(): void {
-  const groups = (["strategic", "luxury", "bonus"] as ResourceCategory[]).map((cat) => {
-    const g = document.createElement("optgroup");
-    g.label = RESOURCE_CATEGORY_KO[cat];
-    for (const k of RESOURCE_KINDS.filter((kind) => RESOURCE_INFO[kind].category === cat)) {
-      const o = document.createElement("option");
-      o.value = k;
-      const site = RESOURCE_INFO[k].site;
-      o.textContent = RESOURCE_INFO[k].ko + (site === "water" ? " (바다·호수)" : site === "any" ? " (육지·바다)" : "");
-      g.append(o);
-    }
-    return g;
-  });
-  resourceKindEl.replaceChildren(...groups);
 }
 
 function setTool(tool: BrushTool): void {
@@ -516,102 +444,10 @@ function drawCursor(x: number, y: number): void {
 
 function drawInfraCursor(x: number, y: number): void {
   if (!world || !mesh) return;
-  const o = viewport.octx;
-  if (draggingPoint) {
-    const item = draggingPoint.kind === "port" ? infra.ports[draggingPoint.index] : infra.facilities[draggingPoint.index];
-    if (!item) return;
-    const to = findCell(mesh, x, y);
-    o.setLineDash([4, 4]);
-    o.strokeStyle = "rgba(0,0,0,0.6)";
-    o.lineWidth = 1;
-    o.beginPath();
-    o.moveTo(mesh.x[item.cell], mesh.y[item.cell]);
-    o.lineTo(mesh.x[to], mesh.y[to]);
-    o.stroke();
-    o.setLineDash([]);
-    viewport.strokeCircle(mesh.x[to], mesh.y[to], 8);
-    return;
-  }
-  if (isSpanTool() && routeStart >= 0) {
-    const end = findCell(mesh, x, y);
-    const [ax, ay, bx, by] = [mesh.x[routeStart], mesh.y[routeStart], mesh.x[end], mesh.y[end]];
-    const tooLong = Math.hypot(bx - ax, by - ay) > MAX_SPAN_LENGTH;
-    o.globalAlpha = tooLong ? 0.4 : 0.9;
-    if (infraTool === "bridge") drawBridgeSpan(o, ax, ay, bx, by, spanMode()); else drawTunnelSpan(o, ax, ay, bx, by, spanMode());
-    o.globalAlpha = 1;
-    viewport.strokeCircle(ax, ay, 5);
-    return;
-  }
-  if (isLineTool() && routeStart >= 0) {
-    if (routePreview && routePreview.length >= 2) {
-      o.beginPath();
-      o.moveTo(mesh.x[routePreview[0]], mesh.y[routePreview[0]]);
-      for (const c of routePreview) o.lineTo(mesh.x[c], mesh.y[c]);
-      o.lineWidth = 4;
-      o.strokeStyle = "rgba(255,255,255,0.85)";
-      o.stroke();
-      o.lineWidth = 2;
-      o.strokeStyle = infraTool === "rail" ? "#2b2b2b" : infraTool === "sea" ? "rgba(18,38,78,0.95)" : "rgba(110,70,40,0.95)";
-      o.stroke();
-    }
-    viewport.strokeCircle(mesh.x[routeStart], mesh.y[routeStart], 5);
-    return;
-  }
-  if (infraTool === "sea") {
-    const port = snapToPort(x, y);
-    if (port >= 0) viewport.strokeCircle(mesh.x[port], mesh.y[port], 10);
-    else viewport.strokeCircle(x, y, 6, [3, 3]);
-    return;
-  }
-  if (infraTool === "toggleMode") {
-    const span = hitSpan(mesh, infra, x, y, viewport.hitRadius());
-    if (span) {
-      const sp = (span.kind === "bridge" ? infra.bridges : infra.tunnels)[span.index];
-      o.lineWidth = 7;
-      o.strokeStyle = "rgba(255,255,255,0.55)";
-      o.beginPath();
-      o.moveTo(mesh.x[sp.a], mesh.y[sp.a]);
-      o.lineTo(mesh.x[sp.b], mesh.y[sp.b]);
-      o.stroke();
-    } else viewport.strokeCircle(x, y, 6, [3, 3]);
-    return;
-  }
-  if (infraTool === "move") {
-    if (draggingSpan) {
-      const cells = movedSpanCells(x, y);
-      if (!cells) return;
-      const [a, b] = cells;
-      const tooLong = Math.hypot(mesh.x[b] - mesh.x[a], mesh.y[b] - mesh.y[a]) > MAX_SPAN_LENGTH;
-      o.globalAlpha = tooLong ? 0.4 : 0.9;
-      const mode = (draggingSpan.kind === "bridge" ? infra.bridges : infra.tunnels)[draggingSpan.index]?.mode ?? "road";
-      if (draggingSpan.kind === "bridge") drawBridgeSpan(o, mesh.x[a], mesh.y[a], mesh.x[b], mesh.y[b], mode);
-      else drawTunnelSpan(o, mesh.x[a], mesh.y[a], mesh.x[b], mesh.y[b], mode);
-      o.globalAlpha = 1;
-      return;
-    }
-    const hit = hitPoint(mesh, infra, x, y, viewport.hitRadius());
-    const item = hit && (hit.kind === "port" ? infra.ports[hit.index] : infra.facilities[hit.index]);
-    if (item) { viewport.strokeCircle(mesh.x[item.cell], mesh.y[item.cell], 10); return; }
-    const span = hitSpan(mesh, infra, x, y, viewport.hitRadius());
-    if (span) {
-      const sp = (span.kind === "bridge" ? infra.bridges : infra.tunnels)[span.index];
-      if (span.part === "body") {
-        o.lineWidth = 6;
-        o.strokeStyle = "rgba(255,255,255,0.5)";
-        o.beginPath();
-        o.moveTo(mesh.x[sp.a], mesh.y[sp.a]);
-        o.lineTo(mesh.x[sp.b], mesh.y[sp.b]);
-        o.stroke();
-      } else {
-        const c = span.part === "a" ? sp.a : sp.b;
-        viewport.strokeCircle(mesh.x[c], mesh.y[c], 7);
-      }
-    }
-    return;
-  }
-  const city = infraTool === "road" || infraTool === "rail" ? nearestWorldCity(x, y) : -1;
-  if (city >= 0) viewport.strokeCircle(mesh.x[world.cities[city].cell], mesh.y[world.cities[city].cell], 10);
-  else viewport.strokeCircle(x, y, infraTool === "erase" ? viewport.hitRadius() : 6, [3, 3]);
+  drawInfraCursorOn(viewport, {
+    world, mesh, infra, tool: infraTool, draggingPoint, draggingSpan, routeStart, routePreview,
+    spanMode, snapToPort, movedSpanCells, nearestCity: nearestWorldCity,
+  }, x, y);
 }
 
 /** 끄는 동안 미리보기 경로를 프레임당 한 번만 계산한다 */
@@ -761,8 +597,7 @@ function snapToPort(x: number, y: number): number {
   return best;
 }
 
-const isLineTool = (): boolean => infraTool === "road" || infraTool === "rail" || infraTool === "sea";
-const isSpanTool = (): boolean => infraTool === "bridge" || infraTool === "tunnel";
+const isSpanTool = (): boolean => isSpanToolOf(infraTool);
 const spanMode = (): SpanMode => ($<HTMLSelectElement>("spanMode").value === "rail" ? "rail" : "road");
 
 function takeFeatureName(): string | undefined {
@@ -1009,16 +844,7 @@ function onEditPointerMove(e: PointerEvent): void {
 
 function showCellInfo(x: number, y: number): void {
   if (!world) return;
-  const info = describeCell(world, findCell(world.mesh, x, y));
-  infoEl.replaceChildren(
-    ...Object.entries(info).flatMap(([k, v]) => {
-      const dt = document.createElement("dt");
-      dt.textContent = k;
-      const dd = document.createElement("dd");
-      dd.textContent = v;
-      return [dt, dd];
-    }),
-  );
+  renderCellInfo(infoEl, describeCell(world, findCell(world.mesh, x, y)));
 }
 
 function endPointer(e: PointerEvent): void {
@@ -1184,18 +1010,6 @@ function redo(): void {
 }
 
 // ── 내보내기·불러오기 ───────────────────────────────────────────────
-function download(name: string, blob: Blob): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-const safeFileName = (s: string): string => s.replace(/[^\p{L}\p{N}_-]+/gu, "_").slice(0, 40) || "map";
-const MAX_IMPORT_BYTES = 20 * 1024 * 1024;
-
 /** 파일·링크에서 읽어 검증한 지도로 바꾼다 (지금 편집은 버린다). 만들었으면 true, 못 만들었으면 generate가 상태 줄에 알린다. */
 function openLoadedMap(map: SharedMap): boolean {
   fillForm(map.options);
@@ -1214,22 +1028,6 @@ function openLoadedMap(map: SharedMap): boolean {
     resources: map.resources,
   });
   return options === map.options;
-}
-
-async function importFile(file: File): Promise<void> {
-  if (file.size > MAX_IMPORT_BYTES) throw new Error("파일이 너무 큽니다 (20MB 이하만 불러올 수 있습니다).");
-  const parsed = parseMapJSONText(await file.text());
-  // 아래에서 편집 상태를 비우므로 generate()의 확인이 뜨지 않는다. 비우기 전에 여기서 묻는다.
-  if (hasEdits() && !confirm(`${file.name}${eul(file.name)} 불러오면 지금 편집한 지형·도시·국경·시설·자원이 사라집니다. 계속할까요?\n(필요하면 먼저 'JSON 저장'으로 보관하세요.)`)) {
-    setStatus("불러오기를 취소했습니다.");
-    return;
-  }
-  openLoadedMap(parsed);
-  const extras = [
-    edited ? "편집된 지형" : "", civ ? "직접 편집한 도시·국경" : "", isEmptyInfra(infra) ? "" : "도로·철도·시설",
-    isEmptyResourceEdits(resourceEdits) ? "" : "직접 편집한 자원",
-  ].filter(Boolean).join(", ");
-  setStatus(`${file.name}${eul(file.name)} 불러왔습니다.${extras ? ` (${extras} 포함)` : ""}`);
 }
 
 // ── 이벤트 연결 ─────────────────────────────────────────────────────
@@ -1316,33 +1114,15 @@ const syncBrush = (): void => {
 brushSize.addEventListener("input", syncBrush);
 brushStrength.addEventListener("input", syncBrush);
 
-// 편집 편의 단축키: [ ] 브러시 크기, 1~4 지형 도구, ? 단축키 목록 (글자 칸·목록에서는 쓰지 않는다)
-const TERRAIN_KEYS: BrushTool[] = ["raise", "lower", "flatten", "smooth"];
-document.addEventListener("keydown", (e) => {
-  const target = e.target as HTMLElement;
-  if (isTypingTarget(target) || target?.tagName === "SELECT" || e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.key === "?") {
-    e.preventDefault();
-    const help = $<HTMLDialogElement>("shortcutHelp");
-    if (!help.open) help.showModal();
-    return;
-  }
-  if (!editMode) return;
-  if ((e.key === "[" || e.key === "]") && (editTarget === "terrain" || editTarget === "border")) {
-    e.preventDefault();
-    brushSize.value = String(stepValue(Number(brushSize.value), e.key === "]" ? 1 : -1, Number(brushSize.min), Number(brushSize.max), Number(brushSize.step)));
-    syncBrush();
-    return;
-  }
-  const n = TERRAIN_KEYS[Number(e.key) - 1];
-  if (editTarget === "terrain" && /^[1-4]$/.test(e.key) && n) {
-    e.preventDefault();
-    setTool(n);
-    setStatus(`지형 도구: ${BRUSH_TOOLS[n].ko}`);
-  }
+// 편집 편의 단축키: [ ] 브러시 크기, 1~4 지형 도구, ? 단축키 목록
+installShortcutKeys({
+  editMode: () => editMode,
+  editTarget: () => editTarget,
+  brushSize,
+  syncBrush,
+  setTool,
+  status: (text) => setStatus(text),
 });
-$("shortcutHelpOpen").addEventListener("click", () => $<HTMLDialogElement>("shortcutHelp").showModal());
-$("shortcutHelpClose").addEventListener("click", () => $<HTMLDialogElement>("shortcutHelp").close());
 $("undo").addEventListener("click", undo);
 $("redo").addEventListener("click", redo);
 $("resetEdits").addEventListener("click", () => {
@@ -1393,53 +1173,18 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-$("exportPng").addEventListener("click", () => {
-  if (!world) return;
-  // 확대해서 보고 있어도 지도 전체를 원래 크기로 저장한다.
-  viewport.exportCanvas().toBlob((blob) => blob && download(`${safeFileName(options.seed)}.png`, blob), "image/png");
-});
-$("exportJson").addEventListener("click", () => {
-  if (!world) return;
-  const suffix = hasEdits() ? "_편집" : "";
-  download(`${safeFileName(options.seed)}${suffix}.json`, new Blob([JSON.stringify(toJSON(world, civ, infra, resourceEdits))], { type: "application/json" }));
-});
-$("importJson").addEventListener("click", () => $<HTMLInputElement>("importFile").click());
-$<HTMLInputElement>("importFile").addEventListener("change", (e) => {
-  const input = e.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = "";
-  if (file) importFile(file).catch((err) => setStatus(err instanceof Error ? err.message : String(err), true));
-});
-$("copyLink").addEventListener("click", async () => {
-  let link = location.href;
-  let note = "현재 지도 링크를 복사했습니다.";
-  if (hasEdits() && world && baseElevation) {
-    // 편집한 지도는 바뀐 고도·지명·문명·시설·자원을 줄여 링크 끝(&e=…)에 담는다.
-    if (!canShare()) {
-      note = "링크를 복사했습니다. 이 브라우저는 편집 내용을 링크에 담을 수 없으니 함께 보내려면 'JSON 저장'을 쓰세요.";
-    } else {
-      let data: string;
-      try {
-        data = await encodeShare(world, baseElevation, civ, infra, resourceEdits);
-      } catch (err) {
-        setStatus(`편집한 지도를 링크로 만들지 못했습니다 (${err instanceof Error ? err.message : String(err)}). 'JSON 저장'을 쓰세요.`, true);
-        return;
-      }
-      if (data.length > MAX_SHARE_CHARS) {
-        note = `편집 내용이 너무 많아(${data.length.toLocaleString("ko-KR")}자) 링크에 담지 못하고 옵션만 담았습니다. 함께 보내려면 'JSON 저장'을 쓰세요.`;
-      } else {
-        link = `${location.href.split("#")[0]}${formatHash(options)}&e=${data}`;
-        note = `편집한 지형·지명·도시·국경·시설·자원까지 담은 링크를 복사했습니다 (${link.length.toLocaleString("ko-KR")}자).`
-          + (link.length > 8000 ? " 일부 메신저에서는 긴 링크가 잘릴 수 있습니다." : "");
-      }
-    }
-  }
-  try {
-    await navigator.clipboard.writeText(link);
-    setStatus(note);
-  } catch {
-    setStatus("클립보드에 접근할 수 없습니다. 주소창의 링크를 직접 복사하세요.", true);
-  }
+createExportPanel({
+  world: () => world,
+  options: () => options,
+  baseElevation: () => baseElevation,
+  civ: () => civ,
+  infra: () => infra,
+  resourceEdits: () => resourceEdits,
+  edited: () => edited,
+  hasEdits,
+  exportCanvas: () => viewport.exportCanvas(),
+  openLoadedMap,
+  status: setStatus,
 });
 
 /** 링크에 담긴 편집 지도를 연다 (JSON 파일을 불러올 때와 같은 방식). 열었으면 true. */
@@ -1493,7 +1238,7 @@ document.fonts?.addEventListener?.("loadingdone", () => {
 // ── 시작 ─────────────────────────────────────────────────────────────
 const initial: WorldOptions = { ...DEFAULT_OPTIONS, ...parseHash(location.hash) };
 fillForm(initial);
-fillResourceKinds();
+renderResourceKindOptions(resourceKindEl);
 setTool(brush.tool);
 setEditTarget("terrain");
 syncBrush();
